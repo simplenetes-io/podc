@@ -1,0 +1,13 @@
+apiVersion: 1.0.0-beta1
+podVersion: 0.0.1
+podRuntime: executable
+
+executable:
+    file: bin/exec
+
+expose:
+  - hostPort: 8181
+    clusterPort: ${clusterPort}
+    ingress:
+        - protocol: http
+          pathBeg: /

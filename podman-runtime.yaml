@@ -1,0 +1,6 @@
+@clone: string network
+podman:
+    _info:
+        title: Pod runtime to run and manage a podman pod
+    _env:
+        - RUN: POD_ENTRY "\$@"

@@ -1,0 +1,29 @@
+@clone: yaml string text file
+
+compile:
+    _info:
+        title: Compile a YAML pod spec into a standalone self managed executable.
+    _env:
+        - name:
+            title: Name of the pod when created.
+            desc: |
+                For podman runtimes this is the name of the pod container and suffix of other containers.
+        - inFile:
+            title: YAML file containing the spec to compile into an executable. Default is pod.yaml.
+            value: ${infile:-pod.yaml}
+        - outFile:
+            title: The output file (this also gives the target directory)
+        - srcDir:
+            title: Source directory of the pod.yaml file.
+            desc: |
+                If the inFile is not located where the original pod.yaml file is (which could happen on an outside preprocessing event)
+                then we need to provide the source dir if compiling an executable runtime, since it looks for "./bin".
+        - doPreprocessing:
+            title: Preprocess and variable substitute pod.yaml file before compiling. Default true.
+        - RUN: COMPILE_ENTRY -- "${name}" "${inFile}" "${outFile}" "${srcDir}" "${doPreprocessing}"
+
+cmdline:
+    _info:
+        title: Use podc as a standalone cmd line tool
+    _env:
+        - RUN: COMPILE_ENTRY -- "\$@"

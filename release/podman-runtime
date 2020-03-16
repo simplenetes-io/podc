@@ -1,0 +1,1391 @@
+#!/usr/bin/env sh
+# Script assembled and exported by:
+#     ___ ___  ___  ____ ____  ___ __ __
+#    / __/ _ \/ _ |/ ___/ __/ / __/ // /
+#   _\ \/ ___/ __ / /__/ _/_ _\ \/ _  /
+#  /___/_/  /_/ |_\___/___(_)___/_//_/
+#  version: 1.3.0 | https://space.sh
+#
+# Node: /podman/
+# Pod runtime to run and manage a podman pod
+
+set -u  # Will not allow for unset variables being used.
+
+SPACE_LOG_LEVEL="${SPACE_LOG_LEVEL:-4}"
+SPACE_LOG_ENABLE_COLORS="${SPACE_LOG_ENABLE_COLORS:-1}"
+SPACE_ASSERT_EXIT="${SPACE_ASSERT_EXIT:-0}"
+SPACE_MUTE_EXIT="${SPACE_MUTE_EXIT:-0}"
+SPACE_MUTE_EXIT_MESSAGE="${SPACE_MUTE_EXIT_MESSAGE:-1}"
+POD_ENTRY()
+{
+    local _SPACE_NAME="POD_ENTRY"
+
+    # This is for display purposes only and shows the runtime type and the version of the runtime impl.
+    local RUNTIME_VERSION="podman 0.1"
+
+    # Set POD_DIR
+    local POD_DIR="${0%/*}"
+    if [ "${POD_DIR}" = "${0}" ]; then
+        # This is weird, not slash in path, but we will handle it.
+        if [ -f "./${0}" ]; then
+            # This happens when the script is invoked as `sh pod`.
+            POD_DIR="${PWD}"
+        else
+            PRINT "Could not determine the base dir for the pod" "error" 0
+            return 1
+        fi
+    fi
+    POD_DIR="$(cd "${POD_DIR}" && pwd)"
+    local start_dir="$(pwd)"
+
+    if [ "${POD_DIR}" != "${start_dir}" ]; then
+        PRINT "Changing CWD to pod dir: ${POD_DIR}" "debug" 0
+        cd "${POD_DIR}"
+    fi
+
+    local action="${1:-help}"
+    shift $(($# > 0 ? 1 : 0))
+
+    if [ "${action}" = "help" ]; then
+        _SHOW_USAGE
+    elif [ "${action}" = "version" ]; then
+        _VERSION
+    elif [ "${action}" = "info" ]; then
+        _SHOW_INFO
+    elif [ "${action}" = "ramdisk-config" ]; then
+        _RAMDISK_CONFIG
+    else
+        # Commands below all need podman, so we check the version first.
+        if ! _CHECK_PODMAN; then
+            return 1
+        fi
+
+        if [ "${action}" = "status" ]; then
+            _SHOW_STATUS
+        elif [ "${action}" = "download" ]; then
+            _DOWNLOAD
+        elif [ "${action}" = "create" ]; then
+            _CREATE
+        elif [ "${action}" = "start" ]; then
+            _START
+        elif [ "${action}" = "stop" ]; then
+            _STOP
+        elif [ "${action}" = "kill" ]; then
+            _KILL
+        elif [ "${action}" = "run" ]; then
+            _RUN
+        elif [ "${action}" = "rerun" ]; then
+            _RERUN
+        elif [ "${action}" = "signal" ]; then
+            _SIGNAL "$@"
+        elif [ "${action}" = "logs" ]; then
+            _LOGS "$@"
+        elif [ "${action}" = "create-volumes" ]; then
+            _CREATE_VOLUMES
+        elif [ "${action}" = "reload-configs" ]; then
+            if [ $# -lt 1 ]; then
+                printf "%s\\n" "Missing argument: config-name(s)"
+                return 1
+            fi
+            _RELOAD_CONFIG "$@"
+        elif [ "${action}" = "rm" ]; then
+            _RM
+        elif [ "${action}" = "purge" ]; then
+            _PURGE
+        elif [ "${action}" = "readiness" ]; then
+            _READINESS_PROBE
+        elif [ "${action}" = "liveness" ]; then
+            _LIVENESS_PROBE
+        else
+            PRINT "Unknown command" "error" 0
+            return 1
+        fi
+    fi
+
+    local status=$?
+    cd "${start_dir}"
+    return "${status}"
+}
+
+_VERSION()
+{
+    local _SPACE_NAME="_VERSION"
+
+    printf "podVersion: %s\\npodRuntime: %s\\n" "${POD_VERSION}" "${RUNTIME_VERSION}"
+}
+
+_SHOW_USAGE()
+{
+    local _SPACE_NAME="_SHOW_USAGE"
+    printf "%s\\n" "Usage:
+    help
+        Output this help.
+
+    version
+        Output podVersion and podRuntime type and version.
+
+    info
+        Output information about this pod's configuration.
+
+    status
+        Output current runtime status for this pod.
+
+    download
+        Perform pull on images for all containers.
+
+    create
+        Create the pod and the volumes, but not the containers. Will not start the pod.
+
+    start
+        Start the pod and run the containers, as long as the pod is already created.
+
+    stop
+        Stop the pod and all containers.
+
+    kill
+        Kill the pod and all containers.
+
+    run
+        Create and start the pod and all containers.
+        This command is safe to run over and over and it will then recreate and failed
+        containers, depending on their restart policy.
+        Note that containers which crash will only be restarted when issuing this run command.
+
+    rm
+        Remove the pod and all containers, but leave volumes intact.
+        If the pod and containers are running they will be stopped first and then removed.
+
+    rerun
+        Remove the pod and all containers then recreate and start them.
+        Same effect as issuing rm and run in sequence.
+
+    signal [container1 container2 etc]
+        Send a signal to one, many or all containers.
+        The signal sent is the SIG defined in the containers YAML specification.
+        Invoking without arguments will invoke signals all all containers which have a SIG defined.
+
+    logs [container1 container2 etc]
+        Output logs for ony, many or all containers.
+        Invoking without arguments will show logs for all containers.
+
+    create-volumes
+        Create the volumes used by this pod, if they do not exist already.
+        Volumes are always created when running the pod, this command can be used
+        to first create the volumes and possibly populate them with data, before running the pod.
+
+    reload-configs config1 [config2 config3 etc]
+        When a "config" has been updated on disk, this command should be invoked to signal the container
+        who mount the specific config(s).
+        Each container mounting the config will be signalled as defined in the YAML specification.
+
+    purge
+        Remove all volumes for a pod.
+        the pod must first have been removed.
+
+    readiness
+        Run the readiness probe on the containers who has one defined.
+        An exit code of 0 means the readiness fared well and all containers are ready to receive traffic.
+        The readiness probe is defined in the YAML describing each container.
+
+    liveness
+        Run the liveness probe on the containers who has one defined.
+        If the probe fails on a container the container will be stopped.
+        It is up to the daemon or the user to issue the 'run' command again to have that container started up again.
+        An exit code of 1 means that at least one container was found in a bad state and stopped.
+        The liveness probe is defined in the YAML describing each container.
+
+    ramdisk-config
+        Output information about what ramdisks this pod wants.
+        This command is ran be the Daemon so it can prepare the ramdisks needed for this pod.
+        If ramdisks are not prepared prior to the pod starting up then the pod will it self
+        create regular directories instead of real ramdisks.
+        This means that for applications where the security of ramdisks are important then
+        the lifecycle of the pods should be managed by the Daemon.
+"
+}
+
+_CREATE()
+{
+    local _SPACE_NAME="_CREATE"
+
+    if _POD_EXISTS; then
+        PRINT "Pod ${POD} already exists" "debug" 0
+        local podstatus="$(_POD_STATUS)"
+        if [ "${podstatus}" = "Created" ] || [ "${podstatus}" = "Running" ]; then
+            # Do nothing
+            return 0
+        else
+            # Destroy pod and all containers
+            PRINT "Pod ${POD} is in a bad state, destroy it and all containers (leave volumes)" "info" 0
+            if ! _DESTROY_POD; then
+                return 1
+            fi
+            # Fall through
+        fi
+    fi
+
+    if ! _CHECK_HOST_PORTS; then
+        return 1
+    fi
+
+    if ! _CHECK_HOST_MOUNTS; then
+        return 1
+    fi
+
+    PRINT "Check ramdisks" "info" 0
+    if ! _CHECK_RAMDISKS; then
+        return 1
+    fi
+
+    if ! _CREATE_VOLUMES; then
+        PRINT "Could not create volumes" "error" 0
+        return 1
+    fi
+
+    PRINT "Create pod" "info" 0
+    _CREATE_POD
+}
+
+_RUN()
+{
+    local _SPACE_NAME="_RUN"
+
+    local podexists=
+    _POD_EXISTS
+    podexists="$?"
+
+    if ! _CREATE; then
+        return 1
+    fi
+
+    local podstatus="$(_POD_STATUS)"
+    if [ "${podstatus}" != "Running" ]; then
+        if ! _START_POD; then
+            _DESTROY_POD
+            return 1
+        fi
+    else
+        PRINT "Pod ${POD} is already running" "debug" 0
+    fi
+
+    if ! _START_CONTAINERS && [ "${podexists}" -ne 0 ]; then
+        # If a container fails to start in the pod creation phase,
+        # then we don't allow the pod to run.
+        # In the creation phase we expect the pod and all containers to successfully run.
+        _DESTROY_POD
+        return 1
+    fi
+}
+
+_PURGE()
+{
+    local _SPACE_NAME="_PURGE"
+
+    if _POD_EXISTS; then
+        PRINT "Pod ${POD} exists. Remove it before purging" "error" 0
+        return 1
+    fi
+
+    _DESTROY_VOLUMES
+}
+
+_RELOAD_CONFIG()
+{
+    local _SPACE_NAME="_RELOAD_CONFIG"
+
+    local configs="$*"
+    shift
+
+    if ! _POD_EXISTS; then
+        PRINT "Pod ${POD} does not exist" "error" 0
+        return 1
+    fi
+
+    local podstatus="$(_POD_STATUS)"
+    if [ "${podstatus}" != "Running" ]; then
+        PRINT "Pod ${POD} is not running" "error" 0
+        return 1
+    fi
+
+    PRINT "Cycle/signal containers who mount the configs ${configs}" "info" 0
+
+    local config=
+    local containersdone=""
+    for config in ${configs}; do
+        local container=
+        local container_nr=
+        for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+            # Check if this container already got signalled
+            if STRING_ITEM_INDEXOF "${containersdone}" "${container_nr}"; then
+                continue
+            fi
+
+            _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+            local usedconfigs=
+            _GET_CONTAINER_VAR "${container_nr}" "CONFIGS" "usedconfigs"
+            # Test if $config exists in list of used configs
+            if STRING_ITEM_INDEXOF "${usedconfigs}" "${config}"; then
+                containersdone="${containersdone} ${container_nr}"
+                PRINT "Container ${container} mounts config ${config}" "info" 0
+                if _CONTAINER_EXISTS "${container}" && [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
+                    # If the container is running then signal it, if it has a signal system setup
+                    _SIGNAL_CONTAINER "${container}" "${container_nr}"
+                else
+                    # If container is not running, cycle it as long as its restart policy is not "never" or "on-failure".
+                    local restartpolicy=
+                    _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restartpolicy"
+                    # Restart on always and on-config
+                    # Do not restart on never, on-failure nor on on-interval:x
+                    if [ "${restartpolicy}" = "always" ] || [ "${restartpolicy}" = "on-config" ]; then
+                        _CYCLE_CONTAINER "${container}" "${container_nr}"
+                    else
+                        PRINT "Container ${container} is not restarted due to its restart policy being \"never\"" "info" 0
+                    fi
+                fi
+            fi
+        done
+    done
+}
+
+_RM()
+{
+    local _SPACE_NAME="_RM"
+
+    if _POD_EXISTS; then
+        _DESTROY_POD
+    else
+        PRINT "Pod does not exist" "info" 0
+    fi
+}
+
+_RERUN()
+{
+    local _SPACE_NAME="_RERUN"
+
+    if _POD_EXISTS; then
+        _STOP_POD
+        _DESTROY_POD
+    fi
+
+    _RUN
+}
+
+_SIGNAL()
+{
+    local _SPACE_NAME="_SIGNAL"
+
+    local container=
+    local containerNames=
+
+    if [ "$#" -gt 0 ]; then
+        # Iterate over each name and append the POD name
+        for container in "$@"; do
+            container="${container}-${POD}"
+            containerNames="${containerNames} ${container}"
+            if ! _CONTAINER_EXISTS "${container}"; then
+                PRINT "Container ${container} does not exist in this pod" "error" 0
+                return 1
+            fi
+        done
+    else
+        # Get all containers
+        local container_nr=
+        for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+            _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+            containerNames="${containerNames} ${container}"
+        done
+    fi
+
+    for container in ${containerNames}; do
+        if [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
+            # If the container is running then signal it, if it has a signal system setup
+            # Find the container nr and then signal
+            local container2=
+            for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
+                if [ "${container}" = "${container2}" ]; then
+                    _SIGNAL_CONTAINER "${container}" "${container_nr}"
+                    break
+                fi
+            done
+        fi
+    done
+}
+
+_LOGS()
+{
+    local _SPACE_NAME="_LOGS"
+
+    local container=
+    local containerNames=
+
+    local tail="${2:-}"
+    local since="${3:-}"
+
+    if [ "${1:-}" != "" ]; then
+        # Iterate over each name and append the POD name
+        for container in "${1}"; do
+            containerNames="${containerNames} ${container}-${POD}"
+        done
+    else
+        # Get all containers
+        local container_nr=
+        for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+            _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+            containerNames="${containerNames} ${container}"
+        done
+    fi
+
+    for container in ${containerNames}; do
+        if ! _CONTAINER_EXISTS "${container}"; then
+            PRINT "Container ${container} does not exist in this pod" "error" 0
+            return 1
+        fi
+    done
+
+    podman logs -tn ${tail:+--tail=$tail} ${since:+--since="$since"} ${containerNames}
+}
+
+_STOP()
+{
+    local _SPACE_NAME="_STOP"
+
+    _STOP_POD
+}
+
+_START()
+{
+    local _SPACE_NAME="_START"
+
+    if _POD_EXISTS; then
+        local podstatus="$(_POD_STATUS)"
+        if [ "${podstatus}" = "Running" ]; then
+            PRINT "Pod ${POD} is already running" "debug" 0
+            return 0
+        fi
+        if [ "${podstatus}" = "Created" ]; then
+            if ! _START_POD; then
+                return 1
+            fi
+            _START_CONTAINERS
+        else
+            PRINT "Pod ${POD} is not in the \"Created\" state. Stopping and starting (resuming) pods is not supported. Try and rerun the pod" "error" 0
+            return 1
+        fi
+    else
+        PRINT "Pod ${POD} does not exist" "error" 0
+        return 1
+    fi
+}
+
+_KILL()
+{
+    local _SPACE_NAME="_KILL"
+
+    _KILL_POD
+}
+
+_CREATE_VOLUMES()
+{
+    local _SPACE_NAME="_CREATE_VOLUMES"
+
+    PRINT "Create volumes" "info" 0
+
+    local volume=
+    for volume in ${POD_VOLUMES}; do
+        if _VOLUME_EXISTS "${volume}"; then
+            PRINT "Volume ${volume} already exists" "info" 0
+            continue
+        else
+            if ! _CREATE_VOLUME "${volume}"; then
+                PRINT "Volume ${volume} could not be created" "error" 0
+                return 1
+            fi
+        fi
+    done
+}
+
+_DOWNLOAD()
+{
+    local _SPACE_NAME="_DOWNLOAD"
+
+    local container=
+    local image=
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+        _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "image"
+        PRINT "Pull image ${image} for container ${container}" "info" 0
+        if ! podman pull "${image}"; then
+            PRINT "Could not pull image ${image}" "error" 0
+            return 1
+        fi
+    done
+}
+
+_SHOW_INFO()
+{
+    local _SPACE_NAME="_SHOW_INFO"
+
+    # TODO: this output needs to be structured and prettified
+    # also, alot of things are missing.
+
+    #printf "%s\\n" "Podname
+#CONTAINER   RESTART   MOUNTS   PORTS   IMAGE
+#"
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        local name=
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "name"
+        printf "Container: %s\\n" "${name}"
+
+        printf "Mounts: "
+        _OUTPUT_CONTAINER_INFO "${container_nr}" "mounts"
+
+        printf "Ports: "
+        _OUTPUT_CONTAINER_INFO "${container_nr}" "ports"
+    done
+}
+
+_SHOW_STATUS()
+{
+    local _SPACE_NAME="_SHOW_STATUS"
+
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        local name=
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "name"
+        printf "Container: %s\\n" "${name}"
+
+        printf "Status: "
+        _CONTAINER_STATUS "${name}"
+    done
+}
+
+_READINESS_PROBE()
+{
+    local _SPACE_NAME="_READINESS_PROBE"
+    return 0
+}
+
+_LIVENESS_PROBE()
+{
+    local _SPACE_NAME="_LIVENESS_PROBE"
+    return 0
+}
+
+_RAMDISK_CONFIG()
+{
+    local _SPACE_NAME="_RAMDISK_CONFIG"
+    printf "%s\\n" "${POD_RAMDISKS}"
+}
+
+_CHECK_PODMAN()
+{
+    local _SPACE_NAME="_CHECK_PODMAN"
+
+    if ! command -v podman >/dev/null 2>/dev/null; then
+        PRINT "podman is not installed" "error" 0
+        return 1
+    fi
+
+    PRINT "Checking podman version" "debug" 0
+
+    local podverstring="$(podman --version)"
+    local ver="${podverstring##*[ ]}"
+    local major="${ver%%[.]*}"
+    local minor="${ver%[.]*}"
+    minor="${minor#*[.]}"
+    local patch="${ver##*[.]}"
+
+    if [ "${major}" -gt 1 ]; then
+        return 0
+    fi
+
+    if [ "${major}" -lt 1 ]; then
+        PRINT "podman must be at least version 1.8.1. Current version is ${major}.${minor}.${patch}" "error" 0
+        return 1
+    fi
+
+    if [ "${minor}" -lt 8 ]; then
+        PRINT "podman must be at least version 1.8.1. Current version is ${major}.${minor}.${patch}" "error" 0
+        return 1
+    fi
+
+    if [ "${minor}" -gt 8 ]; then
+        return 0
+    fi
+
+    if [ "${patch}" -lt 1 ]; then
+        PRINT "podman must be at least version 1.8.1. Current version is ${major}.${minor}.${patch}" "error" 0
+        return 1
+    fi
+}
+
+_GET_CONTAINER_VAR()
+{
+    local _SPACE_NAME="_GET_CONTAINER_VAR"
+
+    local container_nr="${1}"
+    shift
+
+    local varname="${1}"
+    shift
+
+    local outname="${1}"
+    shift
+
+    eval "${outname}=\"\${POD_CONTAINER_${varname}_${container_nr}}\""
+}
+
+_CHECK_HOST_MOUNTS()
+{
+    local _SPACE_NAME="_CHECK_HOST_MOUNTS"
+
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        local mounts=
+        _GET_CONTAINER_VAR "${container_nr}" "MOUNTS" "mounts"
+        STRING_SUBST "mounts" " -v " "" 1
+        mounts="${mounts#-v }"
+        local mount=
+        for mount in ${mounts}; do
+            local left="${mount%%:*}"
+            # Check if it is a directory
+            if [ "${left#*/}" != "${left}" ]; then
+                if [ ! -d "${left}" ]; then
+                    PRINT "Directory to be mounted '${left}' does not exist" "error" 0
+                    return 1
+                fi
+            fi
+        done
+    done
+}
+
+_CHECK_HOST_PORTS()
+{
+    local _SPACE_NAME="_CHECK_HOST_PORTS"
+
+    local port=
+    for port in ${POD_HOSTPORTS}; do
+        if ! NETWORK_PORT_FREE "${port}"; then
+            PRINT "Host port ${port} is busy, can't create the pod ${POD}" "error" 0
+            return 1
+        fi
+    done
+}
+
+_CREATE_POD()
+{
+    local _SPACE_NAME="_CREATE_POD"
+
+    local id=
+    if id=$(podman pod create ${POD_CREATE}); then
+        PRINT "Pod ${POD} created with id: ${id}" "ok" 0
+    else
+        PRINT "Pod ${POD} could not be created" "error" 0
+        return 1
+    fi
+}
+
+_CHECK_RAMDISKS()
+{
+    local _SPACE_NAME="_CHECK_RAMDISKS"
+
+    local ramdisk=
+    for ramdisk in ${POD_RAMDISKS}; do
+        local diskname="${ramdisk%:*}"
+        local dir="${POD_DIR}/ramdisk/${diskname}"
+        if [ ! -d "${dir}" ]; then
+            PRINT "Ramdisk ${diskname} does not exists, creating fake ramdisk as regular directory: ${dir}" "warning" "info" 0
+            if ! mkdir -p "${dir}"; then
+                PRINT "Could not create directory ${dir}" "error" 0
+                return 1
+            fi
+        fi
+    done
+}
+
+_DESTROY_POD()
+{
+    local _SPACE_NAME="_DESTROY_POD"
+
+    local container=
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+        if _CONTAINER_EXISTS "${container}"; then
+            _RM_CONTAINER "${container}"
+        fi
+    done
+
+    local id=
+    if ! id="$(podman pod rm -f "${POD}" 2>&1)"; then
+        PRINT "Pod ${POD} could not be destroyed: ${id}" "error" 0
+        return 1
+    else
+        PRINT "Pod ${POD} destroyed" "ok" 0
+    fi
+
+    _DESTROY_RAMDISKS
+}
+
+_POD_STATUS()
+{
+    local _SPACE_NAME="_POD_STATUS"
+
+    # Note: podman pod ps in this version does not filter using regex, so --filter name matches
+    # all pods who has part of the name in them, hence the grep/awk crafting.
+    podman pod ps --format "{{.Name}} {{.Status}}" |grep "^${POD} " |awk '{print $2}'
+}
+
+PRINT()
+{
+    local color=''
+    local header=''
+    [ "${3:-1}" = 1 ] && {
+        local _SPACE_NAME="${_SPACE_NAME:-anonymous}: ";
+    } || {
+        local _SPACE_NAME="";
+    }
+
+    case "${2:-info}" in
+        error)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 1 ]; then return; fi
+            header="[ERROR] "; color="\033[31m"
+            ;;
+        security)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 1 ]; then return; fi
+            header="[SEC]   "; color="\033[35m"
+            ;;
+        warning)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 2 ]; then return; fi
+            header="[WARN]  "; color="\033[33m"
+            ;;
+        ok)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 3 ]; then return; fi
+            header="[OK]    "; color="\033[32m"
+            ;;
+        info)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 4 ]; then return; fi
+            header="[INFO]  "; color="\033[37m"
+            ;;
+        debug)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 5 ]; then return; fi
+            header="[DEBUG] "; color=""
+            ;;
+        *)
+            return
+            ;;
+    esac
+    if [ "${SPACE_LOG_ENABLE_COLORS}" = "1" ] && [ -t 2 ]; then
+        printf "${color}%s%s%s\033[0m\n" "${header}" "${_SPACE_NAME}" "${1}" >&2
+    else
+        printf "%s%s%s\n" "${header}" "${_SPACE_NAME}" "${1}" >&2
+    fi
+}
+
+_POD_EXISTS()
+{
+    local _SPACE_NAME="_POD_EXISTS"
+
+    podman pod exists "${POD}"
+}
+
+_START_CONTAINERS()
+{
+    local _SPACE_NAME="_START_CONTAINERS"
+
+    local container=
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+        if _CONTAINER_EXISTS "${container}"; then
+            PRINT "Container ${container} exists, check status" "debug" 0
+            # Check status
+            local containerstatus="$(_CONTAINER_STATUS "${container}")"
+            if [ "${containerstatus}" != "running" ]; then
+                PRINT "Container ${container} is not running, check restart policy" "debug" 0
+                # Container is not running anymore, check what our restart policy says.
+                local restartpolicy=
+                _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restartpolicy"
+                local restart="no"
+                if [ "${restartpolicy}" = "always" ]; then
+                    restart="yes"
+                    PRINT "Container ${container} is being cycled" "info" 0
+                elif [ "${restartpolicy%:*}" = "on-interval" ]; then
+                    local interval="${restartpolicy#*:}"
+                    local ts="$(_CONTAINER_FINISHEDAT "${container}")"
+                    local now="$(date +%s)"
+                    if [ "$((now-ts))" -ge "${interval}" ]; then
+                        restart="yes"
+                        PRINT "Container ${container} restarting now on its interval of ${interval} seconds" "info" 0
+                    fi
+                elif [ "${restartpolicy}" = "on-failure" ] || [ "${restartpolicy}" = "on-config" ]; then
+                    # Need to get exit status of container
+                    local exitcode="$(_CONTAINER_EXITCODE "${container}")"
+                    if [ "${exitcode}" -gt 0 ]; then
+                        PRINT "Container ${container} exit code: ${exitcode}, cycle it" "info" 0
+                        restart="yes"
+                    else
+                        PRINT "Container ${container} exit code: ${exitcode}, do not cycle it" "debug" 0
+                    fi
+                else
+                    PRINT "Container ${container} will not be cycled" "debug" 0
+                fi
+
+                if [ "${restart}" = "yes" ]; then
+                    _CYCLE_CONTAINER "${container}" "${container_nr}"
+                    # Allow failure and fall through.
+                fi
+            else
+                PRINT "Container ${container} is running" "debug" 0
+            fi
+        else
+            PRINT "Container ${container} does not exist, run it" "info" 0
+            # Container does not exist, run it.
+            if ! _RUN_CONTAINER "${container}" "${container_nr}"; then
+                # If a container cannot startup properly we abort the creation process.
+                # We do not automatically remove any created containers, that is up to the caller
+                # to decide.
+                return 1
+            fi
+        fi
+    done
+}
+
+_START_POD()
+{
+    local _SPACE_NAME="_START_POD"
+
+    local id=
+    if id=$(podman pod start ${POD}); then
+        PRINT "Pod ${POD} started: ${id}" "ok" 0
+    else
+        PRINT "Pod ${POD} could not be started" "error" 0
+    fi
+}
+
+_DESTROY_VOLUMES()
+{
+    local _SPACE_NAME="_DESTROY_VOLUMES"
+
+    local volume=
+    for volume in ${POD_VOLUMES}; do
+        if ! podman volume rm "${volume}"; then
+            PRINT "Volume ${volume} could not be removed" "error" 0
+        fi
+    done
+
+    PRINT "All volumes for pod ${POD} removed" "info" 0
+}
+
+_CONTAINER_EXISTS()
+{
+    local _SPACE_NAME="_CONTAINER_EXISTS"
+
+    local container="${1}"
+    shift
+
+    podman container exists "${container}"
+}
+
+_CYCLE_CONTAINER()
+{
+    local _SPACE_NAME="_CYCLE_CONTAINER"
+
+    local container="${1}"
+    shift
+
+    local container_nr="${1}"
+    shift
+
+    _RM_CONTAINER "${container}"
+    _RUN_CONTAINER "${container}" "${container_nr}"
+}
+
+_CONTAINER_STATUS()
+{
+    local _SPACE_NAME="_CONTAINER_STATUS"
+
+    local container="${1}"
+    shift
+
+    if ! podman inspect "${container}" --format "{{.State.Status}}" 2>/dev/null; then
+        printf "%s\\n" "non-existent"
+    fi
+}
+
+STRING_ITEM_INDEXOF()
+{
+    local _SPACE_NAME="STRING_ITEM_INDEXOF"
+
+    local __s="${1}"
+    shift
+
+    local __item="${1}"
+    shift
+
+    local __outvar="${1-}"
+    shift $(( $# > 0 ? 1 : 0 ))
+
+    local __item2=
+    local __count=0
+    for __item2 in ${__s}; do
+        if [ "${__item}" = "${__item2}" ]; then
+            if [ -n "${__outvar}" ]; then
+                eval "${__outvar}=\"\${__count}\""
+            fi
+            return 0
+        fi
+        __count=$((__count+1))
+    done
+    if [ -n "${__outvar}" ]; then
+        eval "${__outvar}=\"-1\""
+    fi
+    return 1
+}
+
+_STOP_POD()
+{
+    local _SPACE_NAME="_STOP_POD"
+
+    local container=
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+        if _CONTAINER_EXISTS "${container}"; then
+            if [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
+                PRINT "Stopping container ${container}" "info" 0
+                _CONTAINER_STOP "${container}"
+            fi
+        fi
+    done
+
+    PRINT "Pod ${POD} stopping..." "info" 0
+    local id=
+    if id=$(podman pod stop ${POD} 2>&1); then
+        PRINT "Pod ${POD} stopped: ${id}" "ok" 0
+    else
+        PRINT "Pod ${POD} could not be stopped: ${id}" "error" 0
+        return 1
+    fi
+}
+
+_SIGNAL_CONTAINER()
+{
+    local _SPACE_NAME="_SIGNAL_CONTAINER"
+
+    local container="${1}"
+    shift
+
+    local container_nr="${1}"
+    shift
+
+    local cmd=
+    _GET_CONTAINER_VAR "${container_nr}" "SIGNALCMD" "cmd"
+
+    local sig=
+    _GET_CONTAINER_VAR "${container_nr}" "SIGNALSIG" "sig"
+
+    if [ -n "${sig}" ]; then
+        PRINT "Container ${container} signalled ${sig}" "ok" 0
+        local msg=
+        if ! msg=$(podman kill --signal "${sig}" "${container}" 2>&1); then
+            PRINT "Container ${container} could not be signalled: ${msg}" "error" 0
+            return 1
+        fi
+    elif [ -n "${cmd}" ]; then
+        PRINT "Container ${container} executing: ${cmd}" "info" 0
+        if ! eval "podman exec ${container} ${cmd} >/dev/null 2>&1"; then
+            PRINT "Container ${container} could not execute command" "error" 0
+            return 1
+        fi
+    else
+        PRINT "Container ${container} does not define any signals and cannot be signalled" "info" 0
+    fi
+}
+
+_KILL_POD()
+{
+    local _SPACE_NAME="_KILL_POD"
+
+    local container=
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+        if _CONTAINER_EXISTS "${container}"; then
+            if [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
+                PRINT "Stopping container ${container}" "info" 0
+                _CONTAINER_KILL "${container}"
+            fi
+        fi
+    done
+
+    PRINT "Pod ${POD} killing..." "info" 0
+    local id=
+    if id=$(podman pod kill ${POD} 2>&1); then
+        PRINT "Pod ${POD} killed: ${id}" "ok" 0
+    else
+        PRINT "Pod ${POD} could not be killed: ${id}" "error" 0
+        return 1
+    fi
+}
+
+_CREATE_VOLUME()
+{
+    local _SPACE_NAME="_CREATE_VOLUME"
+
+    local volume="${1}"
+    shift
+
+    podman volume create "${volume}"
+}
+
+_VOLUME_EXISTS()
+{
+    local _SPACE_NAME="_VOLUME_EXISTS"
+
+    local volume="${1}"
+    shift
+
+    podman volume inspect "${volume}" >/dev/null 2>&1
+}
+
+_OUTPUT_CONTAINER_INFO()
+{
+    local _SPACE_NAME="_OUTPUT_CONTAINER_INFO"
+
+    local container_nr="${1}"
+    shift
+
+    local field="${1}"
+    shift
+
+    if [ "${field}" = "mounts" ]; then
+        local data=
+        _GET_CONTAINER_VAR "${container_nr}" "MOUNTS" "data"
+        STRING_SUBST "data" " -v " "" 1
+        data="${data#-v }"
+        printf "%s\\n" "${data}"
+    fi
+
+    if [ "${field}" = "ports" ]; then
+        local data=
+        _GET_CONTAINER_VAR "${container_nr}" "PORTS" "data"
+        STRING_SUBST "data" " -p " "" 1
+        data="${data#-p }"
+        printf "%s\\n" "${data}"
+    fi
+}
+
+STRING_SUBST()
+{
+    local _SPACE_NAME="STRING_SUBST"
+
+    local __varname="${1}"
+    local __rstring=
+    eval "__rstring=\"\${$1}\""
+    shift
+
+    local __subst="${1}"
+    shift
+
+    local __replace="${1}"
+    shift
+
+    local __global="${1:-0}"
+    shift $(( $# > 0 ? 1 : 0 ))
+
+    local __lstring=
+    local __string=""
+    while true; do
+        __lstring="${__rstring%%${__subst}*}"
+        if [ "${__lstring}" = "${__rstring}" ]; then
+            __string="${__string}${__rstring}"
+            break
+        fi
+        __string="${__string}${__lstring}${__replace}"
+        __rstring="${__rstring#*${__subst}}"
+        if [ "${__global}" -ne 1 ]; then
+            __string="${__string}${__rstring}"
+            break
+        fi
+    done
+    eval "${__varname}=\"\${__string}\""
+}
+
+NETWORK_PORT_FREE()
+{
+    local _SPACE_NAME="NETWORK_PORT_FREE"
+
+    local port="${1}"
+    shift
+
+    # Try sockstat first
+    if command -v sockstat >/dev/null 2>&1; then
+        sockstat 2>/dev/null |awk '{print $6}' |grep -q ":${port}\>"
+        return
+    fi
+
+    if ! command -v netstat >/dev/null 2>&1; then
+        PRINT "sockstat or netstat not found, cannot determine if port is busy or not" "error"
+        return 1
+    fi
+
+    if netstat -tulpn 2>/dev/null |grep "LISTEN" |awk '{print $4}' |grep -q ":${port}\>"; then
+        return 1
+    fi
+}
+
+_DESTROY_RAMDISKS()
+{
+    local _SPACE_NAME="_DESTROY_RAMDISKS"
+
+    local ramdisk=
+    for ramdisk in ${POD_RAMDISKS}; do
+        local diskname="${ramdisk%:*}"
+        local dir="${POD_DIR}/ramdisk/${diskname}"
+        if ! mountpoint -q "${dir}"; then
+            PRINT "Fake ramdisk ${diskname} being removed: ${dir}" "info" 0
+            rm -rf "${dir}"
+        fi
+    done
+}
+
+_RM_CONTAINER()
+{
+    local _SPACE_NAME="_RM_CONTAINER"
+
+    local container="${1}"
+    shift
+
+    local id=
+    if id=$(podman rm -f "${container}" 2>&1); then
+        PRINT "Container ${container} removed, id: ${id}" "info" 0
+    else
+        PRINT "Container ${container} could not be removed: ${id}" "error" 0
+        return 1
+    fi
+}
+
+_RUN_CONTAINER()
+{
+    local _SPACE_NAME="_RUN_CONTAINER"
+
+    local container="${1}"
+    shift
+
+    local container_nr="${1}"
+    shift
+
+    PRINT "Run container ${container}" "info" 0
+
+    # We need to supply the container with a PROXY address, which it uses to communicate with other Pods
+    # via the proxy process running outside the containers, on the host.
+    # First check if "proxy" is defined in /etc/hosts, then leave it at that because the hosts file is automatically copied into the container.
+    # If not present then supply the podman run with the --add-hosts
+    # Get the local IP address, the variable is referenced from the container strings when running the container.
+    local ADD_PROXY_IP=
+    if ! grep -iq "^proxy " "/etc/hosts"; then
+        local proxy_ip=
+        if ! proxy_ip="$(NETWORK_LOCAL_IP)"; then
+            PRINT "Cannot get the local IP of the host, which is needed for the internal proxying to work. You could add it manually to the hosts /etc/hosts file as 'proxy: hostlocalip', and try again" "error" 0
+            return 1
+        fi
+        ADD_PROXY_IP="--add-host=proxy:${proxy_ip}"
+    fi
+
+    local run=
+    _GET_CONTAINER_VAR "${container_nr}" "RUN" "run"
+    local id=
+    if ! id=$(eval "podman run ${run}"); then
+        PRINT "Container ${container} could not run. Possibly you need to tear down and recreate the pod by issuing the 'rerun' command" "error" 0
+        return 1
+    else
+        PRINT "Container ${container} started with id: ${id}" "ok" 0
+    fi
+
+    # Wait for startup probe on container
+    local wait=
+    _GET_CONTAINER_VAR "${container_nr}" "WAIT" "wait"
+    local waittimeout=
+    _GET_CONTAINER_VAR "${container_nr}" "WAITTIMEOUT" "waittimeout"
+    waittimeout="${waittimeout:-120}"
+    if [ -n "${wait}" ]; then
+        local now=$(date +%s)
+        local timeout=$((now + waittimeout))
+        PRINT "Container ${container} waiting to startup" "info" 0
+        while true; do
+            local containerstatus="$(_CONTAINER_STATUS "${container}")"
+            if [ "${wait}" = "exit" ]; then
+                if [ "${containerstatus}" != "running" ]; then
+                    local exitcode="$(_CONTAINER_EXITCODE "${container}")"
+                    if [ "${exitcode}" -eq 0 ]; then
+                        break
+                    else
+                        # Wrong exit code
+                        PRINT "Container ${container} exited with exit code: ${exitcode} (expected 0)" "error" 0
+                        return 1
+                    fi
+                fi
+            elif [ "${wait%%:*}" = "tcp" ]; then
+                # TODO: run the startup tcp probe
+                return 1
+            else
+                # Run shell command in container
+                if [ "${containerstatus}" != "running" ]; then
+                    PRINT "Container ${container} exited unexpectedly" "error" 0
+                    return 1
+                fi
+
+                # Run this in subprocess and kill it if it takes too long.
+                $(eval "podman exec ${container} ${wait} >/dev/null 2>&1")&
+                local pid=$!
+                while true; do
+                    sleep 1
+                    if ! kill -0 "${pid}" 2>/dev/null; then
+                        # Process ended
+                        if wait "${pid}"; then
+                            # Break out 2 because we are done with our checks.
+                            break 2
+                        else
+                            # Break out of this loop so command could run again.
+                            break
+                        fi
+                    fi
+
+                    # Process still alive, check overall timeout.
+                    now=$(date +%s)
+                    if [ "${now}" -ge "${timeout}" ]; then
+                        # Kill process and break this loop so the second timeout check can trigger also.
+                        kill -9 "${pid}"
+                        break
+                    fi
+                done
+            fi
+
+            now=$(date +%s)
+            if [ "${now}" -ge "${timeout}" ]; then
+                # The container did not start up properly, it will be up to the caller to decide if to destroy it or not.
+                PRINT "Container ${container} timeouted waiting to exit/become ready" "error" 0
+                return 1
+            fi
+            sleep 1
+        done
+    else
+        # No startup probe, we assume the container is ready already
+        :
+    fi
+
+    # Fire the signalling to other containers that this container is started (which could mean started and successfully exited).
+    local signals=
+    _GET_CONTAINER_VAR "${container_nr}" "SENDSIGNALS" "signals"
+    if [ -n "${signals}" ]; then
+        local container_nr=
+        local container=
+        for container_nr in ${signals}; do
+            _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+
+            # Only signal a container which is running
+            if _CONTAINER_EXISTS "${container}"; then
+                if [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
+                    _SIGNAL_CONTAINER "${container}" "${container_nr}"
+                else
+                    PRINT "Container ${container} is not running, will not signal it" "info" 0
+                fi
+            fi
+        done
+    fi
+}
+
+_CONTAINER_EXITCODE()
+{
+    local _SPACE_NAME="_CONTAINER_EXITCODE"
+
+    local container="${1}"
+    shift
+
+    local code="$(podman inspect ${container} --format "{{.State.ExitCode}}")"
+    code="${code#(}"
+    code="${code%)}"
+    printf "%d\\n" "${code}"
+}
+
+_CONTAINER_FINISHEDAT()
+{
+    local _SPACE_NAME="_CONTAINER_FINISHEDAT"
+
+    local container="${1}"
+    shift
+
+    local at="$(podman inspect ${container} --format "{{.State.FinishedAt}}")"
+    # The format returned is as: 2020-03-04 22:58:50.380309603 +0100 CET
+    # Make it into a format which both GNU date and BSD date utlities can work with.
+    # Cut away ".micros +0100 TZ"
+    local timedate="${at%[.]*}"
+    local tz="${at##*[ ]}"
+    local newDate="${timedate} ${tz}"
+    local ts=
+    # First try BSD date (because the error is easier to mute on a GNU system)
+    if ! date -j -f "%Y-%m-%d %T %Z" "${newDate}" "+%s" 2>/dev/null; then
+        # Try GNU date
+        if ! ts="$(date +%s --date "${newDate}")"; then
+            PRINT "Could not convert container FinishedAt into UNIX ts. Expecting format of '2020-03-04 22:58:50.380309603 +0100 CET'. Got this: '${at}'" "error" 0
+            ts=0
+        fi
+    fi
+
+    printf "%s\\n" "${ts}"
+}
+
+_CONTAINER_STOP()
+{
+    local _SPACE_NAME="_CONTAINER_STOP"
+
+    local container="${1}"
+
+    podman stop "${container}"
+}
+
+_CONTAINER_KILL()
+{
+    local _SPACE_NAME="_CONTAINER_KILL"
+
+    local container="${1}"
+
+    podman kill "${container}"
+}
+
+NETWORK_LOCAL_IP()
+{
+    local _SPACE_NAME="NETWORK_LOCAL_IP"
+    local interface="${1:-}"
+
+    ifconfig ${interface:-} |grep -o "inet .*" |cut -d' ' -f 2 |grep ".*[.].*[.].*[.]1$" -v |sort |tail -n1
+}
+
+main()
+{
+    POD_ENTRY "$@"
+
+    # Space will print exit status.
+    local _status=$?
+    if [ "${_status}" -ne "${SPACE_ASSERT_EXIT}" ]; then
+        if [ "${SPACE_MUTE_EXIT_MESSAGE}" != "1" ] && [ "${SPACE_LOG_LEVEL}" -ge 1 ]; then
+            [ "${SPACE_LOG_ENABLE_COLORS:-1}" = "1" ] && [ -t 2 ] && printf "\033[31m" >&2
+            printf "%s\n" "[ERROR] Script exited with status $_status for node /podman/" >&2
+            [ "${SPACE_LOG_ENABLE_COLORS:-1}" = "1" ] && [ -t 2 ] && printf "\033[0m" >&2
+        fi
+        if [ "${SPACE_MUTE_EXIT}" != 1 ]; then
+            return $((SPACE_ASSERT_EXIT == 0 ? _status : 1))
+        fi
+    elif [ "${SPACE_MUTE_EXIT_MESSAGE}" != "1" ] && [ "${SPACE_LOG_LEVEL}" -ge 5 ]; then
+        [ "${SPACE_LOG_ENABLE_COLORS:-1}" = "1" ] && [ 5 -eq 3 ] && [ -t 2 ] && printf "\033[32m" >&2
+        printf "%s\n" "[DEBUG] Script exited with success (status $_status) for node /podman/" >&2
+        [ "${SPACE_LOG_ENABLE_COLORS:-1}" = "1" ] && [ 5 -eq 3 ] && [ -t 2 ] && printf "\033[0m" >&2
+        : # Important to reset status here.
+    fi
+}
+
+main "$@"
