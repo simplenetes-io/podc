@@ -26,7 +26,7 @@ COMPILE_ENTRY()
 
     if [ -z "${podName}" ]; then
         podName="${PWD##*/}"
-        podName="$(printf "%s\\n" "${podName}" |tr '[:upper:]' '[:lower:]')"
+        #podName="$(printf "%s\\n" "${podName}" |tr '[:upper:]' '[:lower:]')"
         PRINT "No pod name given as first argument, assuming: ${podName}" "info" 0
     fi
 
@@ -97,7 +97,6 @@ COMPILE_ENTRY()
     fi
 
     if ! _COMPILE_POD "${podName}" "${yamlfile}" "${outFile}" "${srcDir}"; then
-        PRINT "Could not compile pod." "error" 0
         return 1
     fi
 }
@@ -110,8 +109,8 @@ _COMPILE_POD()
     local podName="${1}"
     shift
 
-    if [[ ! $podName =~ ^[a-z0-9]([-a-z0-9\.]*[a-z0-9])?$ ]]; then
-        PRINT "Podname '${podName}' is malformed. only lowercase a-z and numbers 0-9 and '-', '.' (but not as first/last char)." "error" 0
+    if [[ ! $podName =~ ^[a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
+        PRINT "Podname '${podName}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter" "error" 0
         return 1
     fi
 
@@ -132,6 +131,10 @@ _COMPILE_POD()
     if [ -z "${srcDir}" ]; then
         srcDir="${inFile%/*}"
     fi
+
+    # Output the fill YAML file if in debug mode
+    local dbgoutput="$(cat "${inFile}")"
+    PRINT "Pod YAMl: "$'\n'"${dbgoutput}" "debug" 0
 
     # Load and parse YAML
     # Bashism
@@ -1229,6 +1232,7 @@ _GET_CONTAINER_NR()
     return 1
 }
 
+# argname is the name of a variable which we want to quote in place
 _QUOTE_ARG()
 {
     SPACE_SIGNATURE="argname"
@@ -1237,13 +1241,16 @@ _QUOTE_ARG()
     local argname="${1}"
     shift
 
+    # Dereference the variable, bashism
+    local argvalue="${!argname}"
+
     local firstchar=
     local lastchar=
-    STRING_SUBSTR "${argname}" 0 1 "firstchar"
-    STRING_SUBSTR "${argname}" -1 1 "lastchar"
+    STRING_SUBSTR "${argvalue}" 0 1 "firstchar"
+    STRING_SUBSTR "${argvalue}" -1 1 "lastchar"
 
     local addquotes=0
-    if [ "${firstchar}" = "${!argname}" ]; then
+    if [ "${firstchar}" = "${argvalue}" ]; then
         # Empty string or single char
         addquotes=1
     elif [ "${firstchar}" = "${lastchar}" ] && [ "${firstchar}" = "\"" ]; then
@@ -1252,7 +1259,7 @@ _QUOTE_ARG()
     elif [ "${firstchar}" = "${lastchar}" ] && [ "${firstchar}" = "'" ]; then
         # String enclosed in single quotes,
         # remove single quotes
-        STRING_SUBSTR "${argname}" 1 -1 "${argname}"
+        STRING_SUBSTR "${argvalue}" 1 -1 "${argname}"
         addquotes=1
     else
         # Whatever this is, add quotes
