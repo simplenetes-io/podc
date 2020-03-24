@@ -23,6 +23,8 @@ POD_ENTRY()
     # This is for display purposes only and shows the runtime type and the version of the runtime impl.
     local RUNTIME_VERSION="podman 0.1"
 
+    local MAX_LOG_FILE_SIZE="10485760"  # 10 MiB large log files, then rotating.
+
     # Set POD_DIR
     local POD_DIR="${0%/*}"
     if [ "${POD_DIR}" = "${0}" ]; then
@@ -63,7 +65,13 @@ POD_ENTRY()
         if [ "${action}" = "status" ]; then
             _SHOW_STATUS
         elif [ "${action}" = "download" ]; then
-            _DOWNLOAD
+            local _out_f="false"
+
+            if ! _GETOPTS "f" "" 0 0 "$@"; then
+                printf "Usage: pod download [-f]\\n" >&2
+                return 1
+            fi
+            _DOWNLOAD "${_out_f}"
         elif [ "${action}" = "create" ]; then
             _CREATE
         elif [ "${action}" = "start" ]; then
@@ -79,12 +87,23 @@ POD_ENTRY()
         elif [ "${action}" = "signal" ]; then
             _SIGNAL "$@"
         elif [ "${action}" = "logs" ]; then
-            _LOGS "$@"
+            local _out_rest=
+            local _out_t=
+            local _out_s=
+            local _out_l=
+            local _out_d=
+
+            if ! _GETOPTS "" "t s l d" 0 999 "$@"; then
+                printf "Usage: pod logs [container] [-t timestamp] [-l limit] [-s streams] [-d details]\\n" >&2
+                return 1
+            fi
+            set -- ${_out_rest}
+            _LOGS "${_out_t}" "${_out_l}" "${_out_s}" "${_out_d}" "$@"
         elif [ "${action}" = "create-volumes" ]; then
             _CREATE_VOLUMES
         elif [ "${action}" = "reload-configs" ]; then
-            if [ $# -lt 1 ]; then
-                printf "%s\\n" "Missing argument: config-name(s)"
+            if ! _GETOPTS "" "" 1 999 "$@"; then
+                printf "Usage: pod reload-configs container1 [container2...]\\n" >&2
                 return 1
             fi
             _RELOAD_CONFIG "$@"
@@ -130,8 +149,9 @@ _SHOW_USAGE()
     status
         Output current runtime status for this pod.
 
-    download
+    download [-f]
         Perform pull on images for all containers.
+        If -f option is set then always pull for updated images, even if they already exist locally.
 
     create
         Create the pod and the volumes, but not the containers. Will not start the pod.
@@ -164,9 +184,17 @@ _SHOW_USAGE()
         The signal sent is the SIG defined in the containers YAML specification.
         Invoking without arguments will invoke signals all all containers which have a SIG defined.
 
-    logs [container1 container2 etc]
-        Output logs for ony, many or all containers.
-        Invoking without arguments will show logs for all containers.
+    logs [containers] [-t timestamp] [-s streams] [-l limit] [-d details]
+        Output logs for one, many or all containers. If none given then show for all.
+        -t timestamp=UNIX timestamp to get logs from, defaults to 0
+        -s streams=[stdout|stderr|stdout,stderr], defaults to \"stdout,stderr\".
+        -l limit=nr of lines to get in total from the top, negative gets from the bottom (latest).
+        -d details=[ts|name|stream|none], comma separated if many.
+            if \"ts\" set will show the UNIX timestamp for each row,
+            if \"name\" is set will show the container name for each row.
+            if \"stream\" is set will show the std stream the logs came on.
+            To not show any details set to \"none\".
+            Defaults to \"ts,name\".
 
     create-volumes
         Create the volumes used by this pod, if they do not exist already.
@@ -184,7 +212,7 @@ _SHOW_USAGE()
 
     readiness
         Run the readiness probe on the containers who has one defined.
-        An exit code of 0 means the readiness fared well and all containers are ready to receive traffic.
+        An exit code of 0 means the readiness fared well and all applicable containers are ready to receive traffic.
         The readiness probe is defined in the YAML describing each container.
 
     liveness
@@ -352,6 +380,7 @@ _RM()
     local _SPACE_NAME="_RM"
 
     if _POD_EXISTS; then
+        _STOP_POD
         _DESTROY_POD
     else
         PRINT "Pod does not exist" "info" 0
@@ -416,34 +445,120 @@ _LOGS()
 {
     local _SPACE_NAME="_LOGS"
 
-    local container=
-    local containerNames=
+    local timestamp="${1:-0}"
+    shift
 
-    local tail="${2:-}"
-    local since="${3:-}"
+    local limit="${1:-0}"
+    shift
 
-    if [ "${1:-}" != "" ]; then
-        # Iterate over each name and append the POD name
-        for container in "${1}"; do
-            containerNames="${containerNames} ${container}-${POD}"
-        done
-    else
+    local streams="${1:-stdout,stderr}"
+    shift
+
+    local details="${1:-ts,name}"
+    shift
+
+    STRING_SUBST "streams" ',' ' ' 1
+    STRING_SUBST "details" ',' ' ' 1
+
+
+    if ! STRING_IS_NUMBER "${timestamp}"; then
+        PRINT "timeout must be a positive number (seconds since epoch)" "error" 0
+        return 1
+    fi
+
+    if ! STRING_IS_NUMBER "${limit}" 1; then
+        PRINT "limit must be a number" "error" 0
+        return 1
+    fi
+
+    local container_nr=
+    local containers=""
+    if [ "$#" -eq 0 ]; then
         # Get all containers
-        local container_nr=
         for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
             _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
-            containerNames="${containerNames} ${container}"
+            containers="${containers} ${container}"
+        done
+    else
+        local container=
+        for container in "$@"; do
+            container="${container}-${POD}"
+            for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+                local container2=
+                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
+                if [ "${container2}" = "${container}" ]; then
+                    containers="${containers} ${container}"
+                    continue 2
+                fi
+            done
+            PRINT "Container ${container} does not exist in this pod" "error" 0
+            #return 1
+            containers="${containers} ${container}"
         done
     fi
 
-    for container in ${containerNames}; do
-        if ! _CONTAINER_EXISTS "${container}"; then
-            PRINT "Container ${container} does not exist in this pod" "error" 0
-            return 1
-        fi
+    # For each container, check if there are logfiles for the streams chosen,
+    # check rotated out logfiles and choose the ones older than ts given.
+    local files=""
+    for container in ${containers}; do
+        local stream=
+        for stream in ${streams}; do
+            # Check current file
+            local file="${container}-${stream}.log"
+            if [ -f "${file}" ]; then
+                files="${files} ${file}"
+            fi
+            # Check older files
+            for file in $(find . -maxdepth 1 -name "${container}-${stream}.log.*" |cut -b3-); do
+                local ts="${file##*.}"
+                if [ "${timestamp}" -le "${ts}" ]; then
+                    files="${files} ${file}"
+                fi
+            done
+        done
     done
 
-    podman logs -tn ${tail:+--tail=$tail} ${since:+--since="$since"} ${containerNames}
+    # For all applicable files, filter each line on timestamp and prepend with container
+    # name and stream name.
+    # Cat all files together, with prefixes, filter out on time, Sort on time
+    local file=
+    for file in ${files}; do
+        local container="${file%%-${POD}*}"
+        local stream="${file%%.log*}"
+        stream="${stream##*-}"
+        awk '{if ($1 >= '"${timestamp}"') {print "'${container}' '${stream}' " $0}}' ${file}
+    done |sort -k3,3n -k4,4n |
+        {
+            if [ "${limit}" = 0 ]; then
+                :
+                cat
+            else
+                if [ "${limit}" -lt 0 ]; then
+                    tail -n"${limit#-}"
+                else
+                    head -n"${limit}"
+                fi
+            fi
+        } |
+        {
+            local columns=""
+            local detail=
+            for detail in ${details}; do
+                local arg=""
+                if [ "${detail}" = "ts" ]; then
+                    arg='\3'
+                elif [ "${detail}" = "name" ]; then
+                    arg='\1'
+                elif [ "${detail}" = "stream" ]; then
+                    arg='\2'
+                fi
+                columns="${columns}${columns:+ }${arg}"
+            done
+            columns="${columns}${columns:+ }\\5"
+            sed "s/\\([^ ]\+\\) \\([^ ]\\+\\) \\([^ ]\\+\\) \\([^ ]\\+\\) \\(.*\\)/${columns}/"
+        }
+
+    printf "%s\\n" "${files}"
 }
 
 _STOP()
@@ -509,17 +624,15 @@ _DOWNLOAD()
 {
     local _SPACE_NAME="_DOWNLOAD"
 
+    local refresh="${1:-false}"
+
     local container=
     local image=
     local container_nr=
     for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
         _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
         _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "image"
-        PRINT "Pull image ${image} for container ${container}" "info" 0
-        if ! podman pull "${image}"; then
-            PRINT "Could not pull image ${image}" "error" 0
-            return 1
-        fi
+        _PULL_IMAGE "${image}" "${refresh}"
     done
 }
 
@@ -636,6 +749,81 @@ _GET_CONTAINER_VAR()
     shift
 
     eval "${outname}=\"\${POD_CONTAINER_${varname}_${container_nr}}\""
+}
+
+_GETOPTS()
+{
+    local _SPACE_NAME="_GETOPTS"
+
+    local simpleSwitches="${1}"
+    shift
+
+    local richSwitches="${1}"
+    shift
+
+    local minPositional="${1:-0}"
+    shift
+
+    local maxPositional="${1:-0}"
+    shift
+
+    _out_rest=""
+
+    local options=""
+    local option=
+    for option in ${richSwitches}; do
+        options="${options}${option}:"
+    done
+
+    local posCount="0"
+    while [ "$#" -gt 0 ]; do
+        local flag="${1#-}"
+        if [ "${flag}" = "${1}" ]; then
+            # Non switch
+            posCount="$((posCount+1))"
+            if [ "${posCount}" -gt "${maxPositional}" ]; then
+                PRINT "Too many positional argumets, max ${maxPositional}" "error" 0
+                return 1
+            fi
+            _out_rest="${_out_rest}${_out_rest:+ }${1}"
+            shift
+            continue
+        fi
+        local flag2=
+        STRING_SUBSTR "${flag}" 0 1 "flag2"
+        if STRING_ITEM_INDEXOF "${simpleSwitches}" "${flag2}"; then
+            if [ "${#flag}" -gt 1 ]; then
+                PRINT "Invalid option: -${flag}" "error" 0
+                return 1
+            fi
+            eval "_out_${flag}=\"true\""
+            shift
+            continue
+        fi
+
+        local OPTIND=1
+        getopts ":${options}" "flag"
+        case "${flag}" in
+            \?)
+                PRINT "Unknown option ${1-}" "error" 0
+                return 1
+                ;;
+            :)
+                PRINT "Option -${OPTARG-} requires an argument" "error" 0
+                return 1
+                ;;
+            *)
+                STRING_ESCAPE "OPTARG"
+                eval "_out_${flag}=\"${OPTARG}\""
+                ;;
+        esac
+        shift $((OPTIND-1))
+    done
+
+    if [ "${posCount}" -lt "${minPositional}" ]; then
+        PRINT "Too few positional argumets, min ${minPositional}" "error" 0
+        return 1
+    fi
 }
 
 _CHECK_HOST_MOUNTS()
@@ -1006,6 +1194,66 @@ _SIGNAL_CONTAINER()
     fi
 }
 
+STRING_IS_NUMBER()
+{
+    local _SPACE_NAME="STRING_IS_NUMBER"
+
+    local __s="${1}"
+    shift
+
+    local __allowNegative="${1:-0}"
+
+    local __s2="${__s#-}"
+
+    if [ "${__s}" != "${__s2}" ] && [ "${__allowNegative}" != 1 ]; then
+        return 1
+    fi
+
+    case "${__s2}" in
+        ''|*[!0-9]*)
+            return 1
+            ;;
+        *)
+            ;;
+    esac
+}
+
+STRING_SUBST()
+{
+    local _SPACE_NAME="STRING_SUBST"
+
+    local __varname="${1}"
+    local __rstring=
+    eval "__rstring=\"\${$1}\""
+    shift
+
+    local __subst="${1}"
+    shift
+
+    local __replace="${1}"
+    shift
+
+    local __global="${1:-0}"
+    shift $(( $# > 0 ? 1 : 0 ))
+
+    local __lstring=
+    local __string=""
+    while true; do
+        __lstring="${__rstring%%${__subst}*}"
+        if [ "${__lstring}" = "${__rstring}" ]; then
+            __string="${__string}${__rstring}"
+            break
+        fi
+        __string="${__string}${__lstring}${__replace}"
+        __rstring="${__rstring#*${__subst}}"
+        if [ "${__global}" -ne 1 ]; then
+            __string="${__string}${__rstring}"
+            break
+        fi
+    done
+    eval "${__varname}=\"\${__string}\""
+}
+
 _KILL_POD()
 {
     local _SPACE_NAME="_KILL_POD"
@@ -1052,6 +1300,30 @@ _VOLUME_EXISTS()
     podman volume inspect "${volume}" >/dev/null 2>&1
 }
 
+_PULL_IMAGE()
+{
+    local _SPACE_NAME="_PULL_IMAGE"
+
+    local image="${1}"
+    shift
+
+    local refresh="${1:-false}"
+
+    local imageExists="false"
+    if podman image exists "${image}"; then
+        imageExists="true"
+        PRINT "Image: ${image} exists" "debug" 0
+    fi
+
+    if [ "${imageExists}" = "false" ] || [ "${refresh}" = "true" ]; then
+        PRINT "Pull image ${image}" "info" 0
+        if ! podman pull "${image}"; then
+            PRINT "Could not pull image ${image}" "error" 0
+            return 1
+        fi
+    fi
+}
+
 _OUTPUT_CONTAINER_INFO()
 {
     local _SPACE_NAME="_OUTPUT_CONTAINER_INFO"
@@ -1079,40 +1351,93 @@ _OUTPUT_CONTAINER_INFO()
     fi
 }
 
-STRING_SUBST()
+STRING_SUBSTR()
 {
-    local _SPACE_NAME="STRING_SUBST"
+    local _SPACE_NAME="STRING_SUBSTR"
 
-    local __varname="${1}"
-    local __rstring=
-    eval "__rstring=\"\${$1}\""
+    # shellcheck disable=SC2034
+    local __sopriv="${1}"
     shift
 
-    local __subst="${1}"
+    local __index="${1}"
     shift
 
-    local __replace="${1}"
+    local __length="${1}"
     shift
 
-    local __global="${1:-0}"
+    local __outvar="${1}"
+    shift
+
+    local __strlength="${#__sopriv}"
+
+    if [ "${__index}" -lt 0 ]; then
+        __index=$((__strlength+__index))
+    fi
+
+    if [ "${__index}" -ge 0 ]; then
+        if [ "${__length}" = "" ]; then
+            __length=$((__strlength-__index))
+        fi
+
+        if [ "${__length}" -lt 0 ]; then
+            __length=$((__strlength-__index+__length))
+        fi
+
+        if [ "$((__index+__length))" -le "${#__sopriv}" ]; then
+            local __wildcard=
+            STRING_REPEAT "?" "${__index}" "" "__wildcard"
+            local __substr="${__sopriv#${__wildcard}}"
+            STRING_REPEAT "?" "$((${#__substr}-__length))" "" "__wildcard"
+            __substr="${__substr%${__wildcard}}"
+            eval "${__outvar}=\"\${__substr}\""
+            return 0
+        fi
+
+    fi
+
+    eval "${__outvar}=\"\""
+}
+
+STRING_INDEXOF()
+{
+    local _SPACE_NAME="STRING_INDEXOF"
+
+    local substr="${1}"
+    shift
+
+    local string="${1}"
+    shift
+
+    local varname="${1-}"
     shift $(( $# > 0 ? 1 : 0 ))
 
-    local __lstring=
-    local __string=""
-    while true; do
-        __lstring="${__rstring%%${__subst}*}"
-        if [ "${__lstring}" = "${__rstring}" ]; then
-            __string="${__string}${__rstring}"
-            break
+    local rest="${string%%${substr}*}"
+
+    if [ "${rest}" = "${string}" ]; then
+        if [ -n "${varname}" ]; then
+            eval "${varname}=\"-1\""
         fi
-        __string="${__string}${__lstring}${__replace}"
-        __rstring="${__rstring#*${__subst}}"
-        if [ "${__global}" -ne 1 ]; then
-            __string="${__string}${__rstring}"
-            break
-        fi
+        return 1
+    fi
+
+    if [ -n "${varname}" ]; then
+        eval "${varname}=\"${#rest}\""
+    fi
+    return 0
+}
+
+STRING_ESCAPE()
+{
+    local _SPACE_NAME="STRING_ESCAPE"
+
+    local ___char=
+    for ___char in \" \$ \( \) \< \> \| \& \/; do
+        case "${2-\"\$}" in
+            *${___char}*)
+                _STRING_ESCAPE "${1}" "${___char}"
+                ;;
+        esac
     done
-    eval "${__varname}=\"\${__string}\""
 }
 
 NETWORK_PORT_FREE()
@@ -1196,15 +1521,57 @@ _RUN_CONTAINER()
         ADD_PROXY_IP="--add-host=proxy:${proxy_ip}"
     fi
 
+    local image=
+    _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "image"
+    if ! _PULL_IMAGE "${image}"; then
+        return 1
+    fi
+
     local run=
     _GET_CONTAINER_VAR "${container_nr}" "RUN" "run"
-    local id=
-    if ! id=$(eval "podman run ${run}"); then
-        PRINT "Container ${container} could not run. Possibly you need to tear down and recreate the pod by issuing the 'rerun' command" "error" 0
-        return 1
-    else
-        PRINT "Container ${container} started with id: ${id}" "ok" 0
-    fi
+
+    local stdoutLog="${container}-stdout.log"
+    local stderrLog="${container}-stderr.log"
+
+    local pid=
+    # Run the container from a subshell, so we can capture stdout and stderr separately.
+    (
+        local ts="$(date +%s)"
+        local status=
+        printf "%s [SNT] Run %s: podman run %s\\n" "${ts}" "${container}" "${run}" >>"${stderrLog}"
+        { eval "podman run ${run}" |_LOG_FILE "${stdoutLog}" "${MAX_LOG_FILE_SIZE}"; } 2>&1 |
+            _LOG_FILE "${stderrLog}" "${MAX_LOG_FILE_SIZE}"
+        # Container has exited
+        status="$?"
+        local containerstatus="$(_CONTAINER_STATUS "${container}")"
+        if [ "${containerstatus}" = "exited" ]; then
+            printf "%s [SNT] %s exited with exit code %s\\n" "${ts}" "${container}" "${status}" >>"${stderrLog}"
+        else
+            printf "%s [SNT] %s ended, with state %s\\n" "${ts}" "${container}" "${containerstatus}" >>"${stderrLog}"
+        fi
+    ) &
+    pid="$!"
+    PRINT "Subshell PID is ${pid} for container ${container}" "debug" 0
+
+    # Wait for container to be running or exited, if it timeoutes then the startup failed
+    local now=$(date +%s)
+    local timeout=$((now + 3))
+    # Small risk here is if container starts, exits and is removed within the same second,
+    # then this logic will fail.
+    while true; do
+        sleep 1
+        local containerstatus="$(_CONTAINER_STATUS "${container}")"
+        if [ "${containerstatus}" = "exited" ] || [ "${containerstatus}" = "running" ]; then
+            break
+        fi
+
+        now=$(date +%s)
+        if [ "${now}" -ge "${timeout}" ]; then
+            # Signal that container run failed
+            PRINT "Container ${container} could not run. Possibly you need to tear down and recreate the pod by issuing the 'rerun' command" "error" 0
+            return 1
+        fi
+    done
 
     # Wait for startup probe on container
     local wait=
@@ -1240,7 +1607,7 @@ _RUN_CONTAINER()
                 fi
 
                 # Run this in subprocess and kill it if it takes too long.
-                $(eval "podman exec ${container} ${wait} >/dev/null 2>&1")&
+                eval "podman exec ${container} ${wait} >/dev/null 2>&1"&
                 local pid=$!
                 while true; do
                     sleep 1
@@ -1307,8 +1674,6 @@ _CONTAINER_EXITCODE()
     shift
 
     local code="$(podman inspect ${container} --format "{{.State.ExitCode}}")"
-    code="${code#(}"
-    code="${code%)}"
     printf "%d\\n" "${code}"
 }
 
@@ -1348,6 +1713,26 @@ _CONTAINER_STOP()
     podman stop "${container}"
 }
 
+STRING_IS_ALL()
+{
+    local _SPACE_NAME="STRING_IS_ALL"
+
+    local __str="${1}"
+    shift
+
+    local __pattern="${1}"
+    shift
+
+    local __m="[!${__pattern}]"
+    case "${__str}" in
+        (*${__m}*)
+            return 1
+            ;;
+        *)
+            ;;
+    esac
+}
+
 _CONTAINER_KILL()
 {
     local _SPACE_NAME="_CONTAINER_KILL"
@@ -1357,12 +1742,136 @@ _CONTAINER_KILL()
     podman kill "${container}"
 }
 
+STRING_REPEAT()
+{
+    local _SPACE_NAME="STRING_REPEAT"
+
+    local __string="${1}"
+    shift
+
+    local __count="${1}"
+    shift
+
+    local __separator="${1}"
+    shift
+
+    local __outvar="${1}"
+    shift
+
+    local __repeatedstring=""
+    while [ "${__count}" -gt 0 ]; do
+        __count=$((__count-1))
+        __repeatedstring="${__repeatedstring}${__string}"
+        if [ "${__count}" -gt 0 ]; then
+            __repeatedstring="${__repeatedstring}${__separator}"
+        fi
+    done
+
+    eval "${__outvar}=\"\${__repeatedstring}\""
+}
+
+_STRING_ESCAPE()
+{
+    local _SPACE_NAME="_STRING_ESCAPE"
+    local __right=
+    local __result=""
+    eval "__right=\$${1}"
+    local __left=
+    while true; do
+        # Cut from right up until last occurrence of char.
+        __left="${__right%%${2}*}"
+        if [ "${__left}" = "${__right}" ]; then
+            # Done
+            __result="${__result}${__left}"
+            break
+        fi
+        __right="${__right#$__left}"
+        # This seems to be necessary the remove the escapes properly.
+        __right="${__right#*${2}}"
+        # Now cut away from right all escapes, one by one..
+        local __escapes=""
+        local __left2=
+        while true; do
+            __left2="${__left%[\\]}"
+            if [ "${__left2}" = "${__left}" ]; then
+                # No more escapes
+                break
+            fi
+            # Escape encountered
+            __escapes="${__escapes}\\"
+            __left="${__left2}"
+        done
+        # Double the number of escapes and add one.
+        __result="${__result}${__left}${__escapes}${__escapes}\\${2}"
+    done
+    eval "${1}=\${__result}"
+}
+
 NETWORK_LOCAL_IP()
 {
     local _SPACE_NAME="NETWORK_LOCAL_IP"
     local interface="${1:-}"
 
     ifconfig ${interface:-} |grep -o "inet .*" |cut -d' ' -f 2 |grep ".*[.].*[.].*[.]1$" -v |sort |tail -n1
+}
+
+FILE_STAT()
+{
+    local _SPACE_NAME="FILE_STAT"
+
+    local file="${1}"
+    shift
+
+    local format="${1}"
+    shift
+
+    #
+    # Check for BSD stat
+    if command -v "pkg" >/dev/null || command -v "brew" >/dev/null ; then
+        # Translate format options
+        format=$(printf "%s" "${format}" | sed -e s'/%a/%A/g' -e s'/%n/%N/g' -e s'/%U/%Su/g' -e s'/%G/%Sg/g' -e s'/%Y/%m/g')
+        stat -f "${format}" "${file}"
+    else
+        stat -c "${format}" "${file}"
+    fi
+
+    if [ "$?" -gt 0 ]; then
+        PRINT "Failed to stat file: ${file}." "error"
+        return 1
+    fi
+}
+
+_LOG_FILE()
+{
+    local _SPACE_NAME="_LOG_FILE"
+
+    local file="${1}"
+    shift
+
+    local maxFileSize="${1:-0}"
+
+    local prevTS=""
+    local ts=""
+
+    local index="0"
+    local line=
+    while read -r line; do
+        # Check if regular file and if size if overdue
+        if [ "${maxFileSize}" -gt 0 ] && [ -f "${file}" ]; then
+            local size="$(FILE_STAT "${file}" "%s")"
+            if [ "${size}" -gt "${maxFileSize}" ]; then
+                mv "${file}" "${file}.$(date +%s)"
+            fi
+        fi
+        ts="$(date +%s)"
+        if [ "${ts}" = "${prevTS}" ]; then
+            index="$((index+1))"
+        else
+            index="0"
+            prevTS="${ts}"
+        fi
+        printf "%s %s %s\\n" "${ts}" "${index}" "${line}" >>"${file}"
+    done
 }
 
 main()

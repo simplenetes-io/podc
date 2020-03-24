@@ -352,10 +352,14 @@ _CREATE_VOLUMES()
     done
 }
 
+# Pull all images
 _DOWNLOAD()
 {
-    SPACE_DEP="_GET_CONTAINER_VAR PRINT"
+    SPACE_SIGNATURE="[refresh]"
+    SPACE_DEP="_GET_CONTAINER_VAR PRINT _PULL_IMAGE"
     #SPACE_ENV="POD_CONTAINER_COUNT"
+
+    local refresh="${1:-false}"
 
     local container=
     local image=
@@ -363,12 +367,35 @@ _DOWNLOAD()
     for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
         _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
         _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "image"
-        PRINT "Pull image ${image} for container ${container}" "info" 0
+        _PULL_IMAGE "${image}" "${refresh}"
+    done
+}
+
+# Pull down an image
+# if refresh is true, then always attempt to pull.
+_PULL_IMAGE()
+{
+    SPACE_SIGNATURE="image [refresh]"
+    SPACE_DEP="PRINT"
+
+    local image="${1}"
+    shift
+
+    local refresh="${1:-false}"
+
+    local imageExists="false"
+    if podman image exists "${image}"; then
+        imageExists="true"
+        PRINT "Image: ${image} exists" "debug" 0
+    fi
+
+    if [ "${imageExists}" = "false" ] || [ "${refresh}" = "true" ]; then
+        PRINT "Pull image ${image}" "info" 0
         if ! podman pull "${image}"; then
             PRINT "Could not pull image ${image}" "error" 0
             return 1
         fi
-    done
+    fi
 }
 
 # Check if a container with the given name exists.
@@ -430,8 +457,6 @@ _CONTAINER_EXITCODE()
     shift
 
     local code="$(podman inspect ${container} --format "{{.State.ExitCode}}")"
-    code="${code#(}"
-    code="${code%)}"
     printf "%d\\n" "${code}"
 }
 
@@ -468,10 +493,11 @@ _RM_CONTAINER()
 }
 
 # Run a container with the given properties.
+# The container must not already exist, in any state.
 _RUN_CONTAINER()
 {
     SPACE_SIGNATURE="container container_nr"
-    SPACE_DEP="_SIGNAL_CONTAINER _CONTAINER_EXISTS _CONTAINER_EXITCODE _CONTAINER_STATUS PRINT NETWORK_LOCAL_IP"
+    SPACE_DEP="_SIGNAL_CONTAINER _CONTAINER_EXISTS _CONTAINER_EXITCODE _CONTAINER_STATUS PRINT NETWORK_LOCAL_IP _PULL_IMAGE FILE_STAT _LOG_FILE"
 
     local container="${1}"
     shift
@@ -496,15 +522,57 @@ _RUN_CONTAINER()
         ADD_PROXY_IP="--add-host=proxy:${proxy_ip}"
     fi
 
+    local image=
+    _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "image"
+    if ! _PULL_IMAGE "${image}"; then
+        return 1
+    fi
+
     local run=
     _GET_CONTAINER_VAR "${container_nr}" "RUN" "run"
-    local id=
-    if ! id=$(eval "podman run ${run}"); then
-        PRINT "Container ${container} could not run. Possibly you need to tear down and recreate the pod by issuing the 'rerun' command" "error" 0
-        return 1
-    else
-        PRINT "Container ${container} started with id: ${id}" "ok" 0
-    fi
+
+    local stdoutLog="${container}-stdout.log"
+    local stderrLog="${container}-stderr.log"
+
+    local pid=
+    # Run the container from a subshell, so we can capture stdout and stderr separately.
+    (
+        local ts="$(date +%s)"
+        local status=
+        printf "%s [SNT] Run %s: podman run %s\\n" "${ts}" "${container}" "${run}" >>"${stderrLog}"
+        { eval "podman run ${run}" |_LOG_FILE "${stdoutLog}" "${MAX_LOG_FILE_SIZE}"; } 2>&1 |
+            _LOG_FILE "${stderrLog}" "${MAX_LOG_FILE_SIZE}"
+        # Container has exited
+        status="$?"
+        local containerstatus="$(_CONTAINER_STATUS "${container}")"
+        if [ "${containerstatus}" = "exited" ]; then
+            printf "%s [SNT] %s exited with exit code %s\\n" "${ts}" "${container}" "${status}" >>"${stderrLog}"
+        else
+            printf "%s [SNT] %s ended, with state %s\\n" "${ts}" "${container}" "${containerstatus}" >>"${stderrLog}"
+        fi
+    ) &
+    pid="$!"
+    PRINT "Subshell PID is ${pid} for container ${container}" "debug" 0
+
+    # Wait for container to be running or exited, if it timeoutes then the startup failed
+    local now=$(date +%s)
+    local timeout=$((now + 3))
+    # Small risk here is if container starts, exits and is removed within the same second,
+    # then this logic will fail.
+    while true; do
+        sleep 1
+        local containerstatus="$(_CONTAINER_STATUS "${container}")"
+        if [ "${containerstatus}" = "exited" ] || [ "${containerstatus}" = "running" ]; then
+            break
+        fi
+
+        now=$(date +%s)
+        if [ "${now}" -ge "${timeout}" ]; then
+            # Signal that container run failed
+            PRINT "Container ${container} could not run. Possibly you need to tear down and recreate the pod by issuing the 'rerun' command" "error" 0
+            return 1
+        fi
+    done
 
     # Wait for startup probe on container
     local wait=
@@ -540,7 +608,7 @@ _RUN_CONTAINER()
                 fi
 
                 # Run this in subprocess and kill it if it takes too long.
-                $(eval "podman exec ${container} ${wait} >/dev/null 2>&1")&
+                eval "podman exec ${container} ${wait} >/dev/null 2>&1"&
                 local pid=$!
                 while true; do
                     sleep 1
@@ -597,6 +665,43 @@ _RUN_CONTAINER()
             fi
         done
     fi
+}
+
+# Read on STDIN and write to "file",
+# when file grows over "ywaxFileSize" "file" is rotated out
+# and a new "file" is created.
+_LOG_FILE()
+{
+    SPACE_SIGNATURE="file [maxFileSize]"
+    SPACE_DEP="FILE_STAT"
+
+    local file="${1}"
+    shift
+
+    local maxFileSize="${1:-0}"
+
+    local prevTS=""
+    local ts=""
+
+    local index="0"
+    local line=
+    while read -r line; do
+        # Check if regular file and if size if overdue
+        if [ "${maxFileSize}" -gt 0 ] && [ -f "${file}" ]; then
+            local size="$(FILE_STAT "${file}" "%s")"
+            if [ "${size}" -gt "${maxFileSize}" ]; then
+                mv "${file}" "${file}.$(date +%s)"
+            fi
+        fi
+        ts="$(date +%s)"
+        if [ "${ts}" = "${prevTS}" ]; then
+            index="$((index+1))"
+        else
+            index="0"
+            prevTS="${ts}"
+        fi
+        printf "%s %s %s\\n" "${ts}" "${index}" "${line}" >>"${file}"
+    done
 }
 
 # Expects the container to be running.
@@ -695,8 +800,9 @@ _SHOW_USAGE()
     status
         Output current runtime status for this pod.
 
-    download
+    download [-f]
         Perform pull on images for all containers.
+        If -f option is set then always pull for updated images, even if they already exist locally.
 
     create
         Create the pod and the volumes, but not the containers. Will not start the pod.
@@ -729,9 +835,17 @@ _SHOW_USAGE()
         The signal sent is the SIG defined in the containers YAML specification.
         Invoking without arguments will invoke signals all all containers which have a SIG defined.
 
-    logs [container1 container2 etc]
-        Output logs for ony, many or all containers.
-        Invoking without arguments will show logs for all containers.
+    logs [containers] [-t timestamp] [-s streams] [-l limit] [-d details]
+        Output logs for one, many or all containers. If none given then show for all.
+        -t timestamp=UNIX timestamp to get logs from, defaults to 0
+        -s streams=[stdout|stderr|stdout,stderr], defaults to \"stdout,stderr\".
+        -l limit=nr of lines to get in total from the top, negative gets from the bottom (latest).
+        -d details=[ts|name|stream|none], comma separated if many.
+            if \"ts\" set will show the UNIX timestamp for each row,
+            if \"name\" is set will show the container name for each row.
+            if \"stream\" is set will show the std stream the logs came on.
+            To not show any details set to \"none\".
+            Defaults to \"ts,name\".
 
     create-volumes
         Create the volumes used by this pod, if they do not exist already.
@@ -749,7 +863,7 @@ _SHOW_USAGE()
 
     readiness
         Run the readiness probe on the containers who has one defined.
-        An exit code of 0 means the readiness fared well and all containers are ready to receive traffic.
+        An exit code of 0 means the readiness fared well and all applicable containers are ready to receive traffic.
         The readiness probe is defined in the YAML describing each container.
 
     liveness
@@ -986,9 +1100,10 @@ _KILL()
 # Remove the pod and all it's containers if the pod is not in it's running state (if so stop it first).
 _RM()
 {
-    SPACE_DEP="_DESTROY_POD _POD_EXISTS PRINT"
+    SPACE_DEP="_DESTROY_POD _POD_EXISTS PRINT _STOP_POD"
 
     if _POD_EXISTS; then
+        _STOP_POD
         _DESTROY_POD
     else
         PRINT "Pod does not exist" "info" 0
@@ -998,37 +1113,121 @@ _RM()
 # Output logs for one or many containers
 _LOGS()
 {
-    SPACE_SIGNATURE="[containers tail since]"
-    SPACE_DEP="_CONTAINER_EXISTS _GET_CONTAINER_VAR _CONTAINER_STATUS PRINT"
+    SPACE_SIGNATURE="timestamp limit streams details [container]"
+    SPACE_DEP="_GET_CONTAINER_VAR PRINT STRING_IS_NUMBER STRING_SUBST"
 
-    local container=
-    local containerNames=
+    local timestamp="${1:-0}"
+    shift
 
-    local tail="${2:-}"
-    local since="${3:-}"
+    local limit="${1:-0}"
+    shift
 
-    if [ "${1:-}" != "" ]; then
-        # Iterate over each name and append the POD name
-        for container in "${1}"; do
-            containerNames="${containerNames} ${container}-${POD}"
-        done
-    else
+    local streams="${1:-stdout,stderr}"
+    shift
+
+    local details="${1:-ts,name}"
+    shift
+
+    STRING_SUBST "streams" ',' ' ' 1
+    STRING_SUBST "details" ',' ' ' 1
+
+
+    if ! STRING_IS_NUMBER "${timestamp}"; then
+        PRINT "timeout must be a positive number (seconds since epoch)" "error" 0
+        return 1
+    fi
+
+    if ! STRING_IS_NUMBER "${limit}" 1; then
+        PRINT "limit must be a number" "error" 0
+        return 1
+    fi
+
+    local container_nr=
+    local containers=""
+    if [ "$#" -eq 0 ]; then
         # Get all containers
-        local container_nr=
         for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
             _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
-            containerNames="${containerNames} ${container}"
+            containers="${containers} ${container}"
+        done
+    else
+        local container=
+        for container in "$@"; do
+            container="${container}-${POD}"
+            for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+                local container2=
+                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
+                if [ "${container2}" = "${container}" ]; then
+                    containers="${containers} ${container}"
+                    continue 2
+                fi
+            done
+            PRINT "Container ${container} does not exist in this pod" "error" 0
+            #return 1
+            containers="${containers} ${container}"
         done
     fi
 
-    for container in ${containerNames}; do
-        if ! _CONTAINER_EXISTS "${container}"; then
-            PRINT "Container ${container} does not exist in this pod" "error" 0
-            return 1
-        fi
+    # For each container, check if there are logfiles for the streams chosen,
+    # check rotated out logfiles and choose the ones older than ts given.
+    local files=""
+    for container in ${containers}; do
+        local stream=
+        for stream in ${streams}; do
+            # Check current file
+            local file="${container}-${stream}.log"
+            if [ -f "${file}" ]; then
+                files="${files} ${file}"
+            fi
+            # Check older files
+            for file in $(find . -maxdepth 1 -name "${container}-${stream}.log.*" |cut -b3-); do
+                local ts="${file##*.}"
+                if [ "${timestamp}" -le "${ts}" ]; then
+                    files="${files} ${file}"
+                fi
+            done
+        done
     done
 
-    podman logs -tn ${tail:+--tail=$tail} ${since:+--since="$since"} ${containerNames}
+    # For all applicable files, filter each line on timestamp and prepend with container
+    # name and stream name.
+    # Cat all files together, with prefixes, filter out on time, Sort on time
+    local file=
+    for file in ${files}; do
+        local container="${file%%-${POD}*}"
+        local stream="${file%%.log*}"
+        stream="${stream##*-}"
+        awk '{if ($1 >= '"${timestamp}"') {print "'${container}' '${stream}' " $0}}' ${file}
+    done |sort -k3,3n -k4,4n |
+        {
+            if [ "${limit}" = 0 ]; then
+                :
+                cat
+            else
+                if [ "${limit}" -lt 0 ]; then
+                    tail -n"${limit#-}"
+                else
+                    head -n"${limit}"
+                fi
+            fi
+        } |
+        {
+            local columns=""
+            local detail=
+            for detail in ${details}; do
+                local arg=""
+                if [ "${detail}" = "ts" ]; then
+                    arg='\3'
+                elif [ "${detail}" = "name" ]; then
+                    arg='\1'
+                elif [ "${detail}" = "stream" ]; then
+                    arg='\2'
+                fi
+                columns="${columns}${columns:+ }${arg}"
+            done
+            columns="${columns}${columns:+ }\\5"
+            sed "s/\\([^ ]\+\\) \\([^ ]\\+\\) \\([^ ]\\+\\) \\([^ ]\\+\\) \\(.*\\)/${columns}/"
+        }
 }
 
 # Signal one or many containers.
@@ -1115,7 +1314,7 @@ _RELOAD_CONFIG()
 
     local config=
     local containersdone=""
-    for config in ${configs}; do
+    for config in "$@"; do
         local container=
         local container_nr=
         for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
@@ -1231,13 +1430,91 @@ _CHECK_PODMAN()
     fi
 }
 
+_GETOPTS()
+{
+    SPACE_SIGNATURE="simpleSwitches richSwitches minPositional maxPositional [args]"
+    SPACE_DEP="PRINT STRING_SUBSTR STRING_INDEXOF STRING_ESCAPE"
+
+    local simpleSwitches="${1}"
+    shift
+
+    local richSwitches="${1}"
+    shift
+
+    local minPositional="${1:-0}"
+    shift
+
+    local maxPositional="${1:-0}"
+    shift
+
+    _out_rest=""
+
+    local options=""
+    local option=
+    for option in ${richSwitches}; do
+        options="${options}${option}:"
+    done
+
+    local posCount="0"
+    while [ "$#" -gt 0 ]; do
+        local flag="${1#-}"
+        if [ "${flag}" = "${1}" ]; then
+            # Non switch
+            posCount="$((posCount+1))"
+            if [ "${posCount}" -gt "${maxPositional}" ]; then
+                PRINT "Too many positional argumets, max ${maxPositional}" "error" 0
+                return 1
+            fi
+            _out_rest="${_out_rest}${_out_rest:+ }${1}"
+            shift
+            continue
+        fi
+        local flag2=
+        STRING_SUBSTR "${flag}" 0 1 "flag2"
+        if STRING_ITEM_INDEXOF "${simpleSwitches}" "${flag2}"; then
+            if [ "${#flag}" -gt 1 ]; then
+                PRINT "Invalid option: -${flag}" "error" 0
+                return 1
+            fi
+            eval "_out_${flag}=\"true\""
+            shift
+            continue
+        fi
+
+        local OPTIND=1
+        getopts ":${options}" "flag"
+        case "${flag}" in
+            \?)
+                PRINT "Unknown option ${1-}" "error" 0
+                return 1
+                ;;
+            :)
+                PRINT "Option -${OPTARG-} requires an argument" "error" 0
+                return 1
+                ;;
+            *)
+                STRING_ESCAPE "OPTARG"
+                eval "_out_${flag}=\"${OPTARG}\""
+                ;;
+        esac
+        shift $((OPTIND-1))
+    done
+
+    if [ "${posCount}" -lt "${minPositional}" ]; then
+        PRINT "Too few positional argumets, min ${minPositional}" "error" 0
+        return 1
+    fi
+}
+
 POD_ENTRY()
 {
     SPACE_SIGNATURE="action [args]"
-    SPACE_DEP="_VERSION _SHOW_USAGE _CREATE _RUN _PURGE _RELOAD_CONFIG _RM _RERUN _SIGNAL _LOGS _STOP _START _KILL _CREATE_VOLUMES _DOWNLOAD _SHOW_INFO _SHOW_STATUS _READINESS_PROBE _LIVENESS_PROBE _RAMDISK_CONFIG _CHECK_PODMAN _GET_CONTAINER_VAR"
+    SPACE_DEP="_VERSION _SHOW_USAGE _CREATE _RUN _PURGE _RELOAD_CONFIG _RM _RERUN _SIGNAL _LOGS _STOP _START _KILL _CREATE_VOLUMES _DOWNLOAD _SHOW_INFO _SHOW_STATUS _READINESS_PROBE _LIVENESS_PROBE _RAMDISK_CONFIG _CHECK_PODMAN _GET_CONTAINER_VAR _GETOPTS"
 
     # This is for display purposes only and shows the runtime type and the version of the runtime impl.
     local RUNTIME_VERSION="podman 0.1"
+
+    local MAX_LOG_FILE_SIZE="10485760"  # 10 MiB large log files, then rotating.
 
     # Set POD_DIR
     local POD_DIR="${0%/*}"
@@ -1279,7 +1556,13 @@ POD_ENTRY()
         if [ "${action}" = "status" ]; then
             _SHOW_STATUS
         elif [ "${action}" = "download" ]; then
-            _DOWNLOAD
+            local _out_f="false"
+
+            if ! _GETOPTS "f" "" 0 0 "$@"; then
+                printf "Usage: pod download [-f]\\n" >&2
+                return 1
+            fi
+            _DOWNLOAD "${_out_f}"
         elif [ "${action}" = "create" ]; then
             _CREATE
         elif [ "${action}" = "start" ]; then
@@ -1295,12 +1578,23 @@ POD_ENTRY()
         elif [ "${action}" = "signal" ]; then
             _SIGNAL "$@"
         elif [ "${action}" = "logs" ]; then
-            _LOGS "$@"
+            local _out_rest=
+            local _out_t=
+            local _out_s=
+            local _out_l=
+            local _out_d=
+
+            if ! _GETOPTS "" "t s l d" 0 999 "$@"; then
+                printf "Usage: pod logs [container] [-t timestamp] [-l limit] [-s streams] [-d details]\\n" >&2
+                return 1
+            fi
+            set -- ${_out_rest}
+            _LOGS "${_out_t}" "${_out_l}" "${_out_s}" "${_out_d}" "$@"
         elif [ "${action}" = "create-volumes" ]; then
             _CREATE_VOLUMES
         elif [ "${action}" = "reload-configs" ]; then
-            if [ $# -lt 1 ]; then
-                printf "%s\\n" "Missing argument: config-name(s)"
+            if ! _GETOPTS "" "" 1 999 "$@"; then
+                printf "Usage: pod reload-configs container1 [container2...]\\n" >&2
                 return 1
             fi
             _RELOAD_CONFIG "$@"

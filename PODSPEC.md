@@ -513,7 +513,26 @@ Ex: "tmp1:10M tmp2:5M"
 Note that if ramdisks have not been created prior to starting the pod, they pod is expected to gracefully handle this by creating regular directories which is can use instead of provided ramdisks.
 
 ```sh
-./pod logs [containers]
+./pod logs [channels since container1 container2]
 # return 0
-# stdout: podman logs --names containers
+# stdout: logs
+```
+
+Check the status of the pod.
+If the pod does not exists the result is "non-existent".
+If it does exists and is in the "Created" state then the return is "created".
+If it does exists and is in the "Running" state then the return is
+    "not-ready", if not all containers return success on readiness
+    "running", if all containers return success on readiness
+    "broken", if
+If the pod does exists and is in any other state state then the return is "stopped".
+
+The status is calculated as 
+
+```sh
+./pod status
+# return 0
+# stdout: non-existent|created|downloading|not-ready|running|stopped
+# readiness: true|false
+# liveness: true|false
 ```
