@@ -9,7 +9,25 @@ containers:
     - name: webserver
       image: kitematic/hello-world-nginx
       restart: on-failure
-      signalExec:
+      startupProbe:
+          timeout: 33
+          cmd:
+              - sh
+              - -c
+              - "wget -O /dev/null http://127.0.0.1"
+      readinessProbe:
+          timeout: 66
+          cmd:
+              - sh
+              - -c
+              - "wget -O /dev/null http://127.0.0.1"
+      livenessProbe:
+          timeout: 9
+          cmd:
+              - sh
+              - -c
+              - "wget -O /dev/null http://127.0.0.1"
+      signal:
           - kill: HUP
       mounts:
           - dest: /website_files

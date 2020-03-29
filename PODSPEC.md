@@ -6,6 +6,23 @@ A config directory in a pod is something which the pod can mount to a container.
 Underscore prefixed dirs are copied to the cluster project but are then not copied to pod releases nor synced to hosts in cluster.
 Such underscores configs are used as templates for the cluster projects, such as the `ingress pod's` templates `(_tpl/)` for haproxy configuration snippets.
 
+## Probes
+There are three different probe supported:
+
+    - Startup probes
+    - Readiness probes
+    - Liveness probes
+
+All probes run a command in the container to determine if the probe was successful or not. The startup probe can also wait for a clean exit (code 0) of the container and consider it a successful startup.
+
+Each probe has a timeout for how long the command or the repeated invocations (for startup) of the command is allowed to take.
+
+A probe is always run inside the container, so when wanting to do TCP/HTTP probes, that would mean that `curl`, `wget` or `netcat` needs to be installed in the container for the probe to be able to run.
+
+Simplenetes does not define a special case for command, HTTP or TCP probes, it is all command probes, and they all run inside the containers.
+
+If needing to delay the Liveness probe then use a Startup probe to either determine that livenss is safe to run now or which simply sleeps a number of seconds before letting the pod creation continue.
+
 ## Proxy and Ingress confs
 When a Pod is compiled, the compiler outputs alongside the `pod` executable possibly two extra files:
 
@@ -162,41 +179,61 @@ containers:
       # Startup probe of the container.
       # The pod startup process will not continue until a container is started up.
       # Note that a successful startup could mean that the container started and then exited with code 0.
+      # If a container fails to startup properly in the pod creation phase then the pod will be destroyed.
+      # If a container fails to startup later it will be destroyed and restarted according to its restart policy.
       startupProbe:
           # Wait max 60 seconds for the container to be ready. Default is 120.
+          # The pod executable sleeps 1 second between invoking the command and will abort the startup after timeout is reached.
           timeout: 60
 
           # Set to true to wait for the container to exit with code 0. When the container has exited is is treated as started and ready.
           # Any other exit code will fail the startup process.
+          # The exit probe is exclusively for the startupProbe (not for readiness/liveness probes)
           exit: false
 
           # Or, define a command to be run inside the container to determine when the container has started up properly.
           # Each argument as a separate list item
           cmd:
-              - "sh"
+              - sh
               - -c
-              - "[ -e \"/tmp/\$USER/ready\" ] || [ -e /home/\$USER/ready ]"
+              - '[ -e "/tmp/$USER/ready" ] || [ -e "/home/$USER/ready" ]'
 
-          # If no `exit` nor `cmd` is defined then the container is treated as successfully started as soon as it is started.
+          # Note that `exit and `cmd` are mutually exclusive to each other.
+          # If none of them are defined then the container is treated as successfully started as soon as the container is started.
+          # If wanting to run HTTP GET or TCP socket connection tests to determine the startup state, see the docs for how to do that.
 
-          # What other containers shall we signal that we have started successfully.
-          # Only containers which are Up will get signalled. When Pod is starting up fresh then only containers defined above this container can possibly be Up.
-          # Containers to be signalled must also define the `signal` property.
+          # Define under `signal` which other containers shall we signal that we have started successfully.
+          # Only containers which are Up will get signalled. When Pod is starting up fresh then only containers defined above this container can possibly be Up and therefore get signalled.
+          # However, if the container is restarted then all containers defined under `signal` will get signalled, regardless the definition order.
+          # Containers to be signalled must also define the `signal` property, otherwise the signalling is ignored.
           signal:
               - container: hello
               - container: secret
 
-      # TODO:
       # Check to determine if the container is ready to recieve traffic.
       # This check is valid to run during the whole pod lifecycle.
-      # If any test fails then the daemon should not include this pod in the proxying of traffic.
+      # If any test fails then the daemon will not include this pod in the proxying of traffic.
+      # In this example we do a HTTP GET request to probe if the container is ready to receive traffic.
+      # This command is run inside the container, and in this case it would require that `curl` is installed inside the container. `wget` or `netcat` can also be used, since any command could be run as long as
+      # it is installed in the container.
       readinessProbe:
+        timeout: 6
+        cmd:
+            - sh
+            - c
+            - 'code=$(curl -Lqso /dev/null http://127.0.0.1:8080/healthz -H "Host: example.org" -w "%{http_code}") && [ "${code}" -ge 200 ] && [ "${code}" -lt 400 ]'
 
-      # TODO:
       # Check to determine the health of the container.
-      # This check is valid to run during the whole pod lifecycle.
+      # This check is valid to run during the whole pod lifecycle, but only after the startupProbe (if any) is finished.
       # If a check fails then the container will be stopped. Depending on it's restart-policy it might get restarted.
+      # This has the same syntax as the "readinessProbe".
+      # Here we will show an example using `wget`. `curl` is more precise in checking, but often only `busybox wget` is available in containers.
       livenessProbe:
+        timeout: 6
+        cmd:
+            - sh
+            - c
+            - "wget -O /dev/null http://127.0.0.1:8080/healthz"
 
       # Expose ports on the containers and possible create Ingress configuration to proxy traffic.
       expose:

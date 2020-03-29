@@ -140,7 +140,7 @@ _CONTAINER_STOP()
 
     local container="${1}"
 
-    podman stop "${container}"
+    podman stop "${container}" >/dev/null
 }
 
 _STOP_POD()
@@ -463,7 +463,7 @@ _CONTAINER_EXITCODE()
 _CYCLE_CONTAINER()
 {
     SPACE_SIGNATURE="container container_nr"
-    SPACE_DEP="_RUN_CONTAINER _RM_CONTAINER"
+    SPACE_DEP="_RUN_CONTAINER _RM_CONTAINER _CONTAINER_EXISTS _CONTAINER_KILL"
 
     local container="${1}"
     shift
@@ -472,7 +472,13 @@ _CYCLE_CONTAINER()
     shift
 
     _RM_CONTAINER "${container}"
-    _RUN_CONTAINER "${container}" "${container_nr}"
+    if ! _RUN_CONTAINER "${container}" "${container_nr}"; then
+        if _CONTAINER_EXISTS "${container}"; then
+            # Kill it first, because it is quicker
+            _CONTAINER_KILL "${container}"
+            _RM_CONTAINER "${container}"
+        fi
+    fi
 }
 
 _RM_CONTAINER()
@@ -497,7 +503,7 @@ _RM_CONTAINER()
 _RUN_CONTAINER()
 {
     SPACE_SIGNATURE="container container_nr"
-    SPACE_DEP="_SIGNAL_CONTAINER _CONTAINER_EXISTS _CONTAINER_EXITCODE _CONTAINER_STATUS PRINT NETWORK_LOCAL_IP _PULL_IMAGE FILE_STAT _LOG_FILE"
+    SPACE_DEP="_SIGNAL_CONTAINER _CONTAINER_EXISTS _CONTAINER_EXITCODE _CONTAINER_STATUS PRINT NETWORK_LOCAL_IP _PULL_IMAGE FILE_STAT _LOG_FILE _RUN_PROBE"
 
     local container="${1}"
     shift
@@ -575,18 +581,18 @@ _RUN_CONTAINER()
     done
 
     # Wait for startup probe on container
-    local wait=
-    _GET_CONTAINER_VAR "${container_nr}" "WAIT" "wait"
-    local waittimeout=
-    _GET_CONTAINER_VAR "${container_nr}" "WAITTIMEOUT" "waittimeout"
-    waittimeout="${waittimeout:-120}"
-    if [ -n "${wait}" ]; then
+    local startupProbe=
+    _GET_CONTAINER_VAR "${container_nr}" "STARTUPPROBE" "startupProbe"
+    local startupTimeout=
+    _GET_CONTAINER_VAR "${container_nr}" "STARTUPTIMEOUT" "startupTimeout"
+    startupTimeout="${startupTimeout:-120}"
+    if [ -n "${startupProbe}" ]; then
         local now=$(date +%s)
-        local timeout=$((now + waittimeout))
+        local timeout=$((now + startupTimeout))
         PRINT "Container ${container} waiting to startup" "info" 0
         while true; do
             local containerstatus="$(_CONTAINER_STATUS "${container}")"
-            if [ "${wait}" = "exit" ]; then
+            if [ "${startupProbe}" = "exit" ]; then
                 if [ "${containerstatus}" != "running" ]; then
                     local exitcode="$(_CONTAINER_EXITCODE "${container}")"
                     if [ "${exitcode}" -eq 0 ]; then
@@ -597,9 +603,6 @@ _RUN_CONTAINER()
                         return 1
                     fi
                 fi
-            elif [ "${wait%%:*}" = "tcp" ]; then
-                # TODO: run the startup tcp probe
-                return 1
             else
                 # Run shell command in container
                 if [ "${containerstatus}" != "running" ]; then
@@ -608,34 +611,15 @@ _RUN_CONTAINER()
                 fi
 
                 # Run this in subprocess and kill it if it takes too long.
-                eval "podman exec ${container} ${wait} >/dev/null 2>&1"&
-                local pid=$!
-                while true; do
-                    sleep 1
-                    if ! kill -0 "${pid}" 2>/dev/null; then
-                        # Process ended
-                        if wait "${pid}"; then
-                            # Break out 2 because we are done with our checks.
-                            break 2
-                        else
-                            # Break out of this loop so command could run again.
-                            break
-                        fi
-                    fi
-
-                    # Process still alive, check overall timeout.
-                    now=$(date +%s)
-                    if [ "${now}" -ge "${timeout}" ]; then
-                        # Kill process and break this loop so the second timeout check can trigger also.
-                        kill -9 "${pid}"
-                        break
-                    fi
-                done
+                if _RUN_PROBE "${container}" "${startupProbe}" "${timeout}"; then
+                    # Probe succeded
+                    break
+                fi
             fi
 
             now=$(date +%s)
             if [ "${now}" -ge "${timeout}" ]; then
-                # The container did not start up properly, it will be up to the caller to decide if to destroy it or not.
+                 # The container did not start up properly, it will be up to the caller to decide if to destroy it or not.
                 PRINT "Container ${container} timeouted waiting to exit/become ready" "error" 0
                 return 1
             fi
@@ -648,7 +632,7 @@ _RUN_CONTAINER()
 
     # Fire the signalling to other containers that this container is started (which could mean started and successfully exited).
     local signals=
-    _GET_CONTAINER_VAR "${container_nr}" "SENDSIGNALS" "signals"
+    _GET_CONTAINER_VAR "${container_nr}" "STARTUPSIGNAL" "signals"
     if [ -n "${signals}" ]; then
         local container_nr=
         local container=
@@ -1365,19 +1349,110 @@ _PURGE()
     _DESTROY_VOLUMES
 }
 
-# Check if the pod is ready to recieve traffic.
+# Exec a command inside a container, repeatedly if not getting exit code 0.
+# Sleep 1 second between each exec and timeout eventually (killing the command if necessary.
+_RUN_PROBE()
+{
+    SPACE_SIGNATURE="container command timeout"
+    SPACE_DEP="PRINT"
+
+    local container="${1}"
+    shift
+
+    local command="${1}"
+    shift
+
+    local timeout="${1}"
+    shift
+
+    PRINT "podman exec ${container} ${command}" "debug" 0
+
+    eval "podman exec ${container} ${command} >/dev/null 2>&1"&
+    local pid="$!"
+    while true; do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            # Process ended, get exit code.
+            if wait "${pid}"; then
+                # exit code 0, success.
+                return 0
+            else
+                # Probe did not succeed.
+                return 1
+            fi
+        fi
+
+        # Process still alive, check overall timeout.
+        now=$(date +%s)
+        if [ "${now}" -ge "${timeout}" ]; then
+            # Probe did not succeed.
+            # Kill process.
+            kill -9 "${pid}"
+            return 1
+        fi
+
+        sleep 1
+    done
+}
+
+# Check if the pod is ready to receive traffic.
 _READINESS_PROBE()
 {
-    # TODO:
-    return 0
+    SPACE_DEP="_RUN_PROBE _CONTAINER_STATUS PRINT"
+
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        local container=
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+        local probe=
+        _GET_CONTAINER_VAR "${container_nr}" "READINESSPROBE" "probe"
+        local timeout=
+        _GET_CONTAINER_VAR "${container_nr}" "READINESSTIMEOUT" "timeout"
+        if [ -n "${probe}" ]; then
+            local containerstatus="$(_CONTAINER_STATUS "${container}")"
+            if [ "${containerstatus}" != "running" ]; then
+                PRINT "Probe for container ${container} failed because container is not running" "debug" 0
+                return 1
+            fi
+            local now=$(date +%s)
+            local expire="$((now + timeout))"
+            if ! _RUN_PROBE "${container}" "${probe}" "${expire}"; then
+                # Probe failed
+                PRINT "Probe for container ${container} failed" "debug" 0
+                return 1
+            fi
+        fi
+    done
 }
 
 # Check each container it is healthy, if not stop the container.
 # The container will restart according to it's restart-policy.
 _LIVENESS_PROBE()
 {
-    # TODO:
-    return 0
+    SPACE_DEP="_RUN_PROBE _CONTAINER_STATUS PRINT _CONTAINER_STOP"
+
+    local container_nr=
+    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+        local container=
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+        local probe=
+        _GET_CONTAINER_VAR "${container_nr}" "LIVENESSPROBE" "probe"
+        local timeout=
+        _GET_CONTAINER_VAR "${container_nr}" "LIVENESSTIMEOUT" "timeout"
+        if [ -n "${probe}" ]; then
+            local containerstatus="$(_CONTAINER_STATUS "${container}")"
+            if [ "${containerstatus}" != "running" ]; then
+                PRINT "Liveness probe for container ${container} is skipped because container is not running" "debug" 0
+                continue
+            fi
+            local now=$(date +%s)
+            local expire="$((now + timeout))"
+            if ! _RUN_PROBE "${container}" "${probe}" "${expire}"; then
+                # Probe failed
+                PRINT "Liveness probe for container ${container} failed. Stopping container" "debug" 0
+                _CONTAINER_STOP "${container}"
+            fi
+        fi
+    done
 }
 
 # Output the ramdisks configuration for this pod's containers.
@@ -1405,6 +1480,14 @@ _CHECK_PODMAN()
     local minor="${ver%[.]*}"
     minor="${minor#*[.]}"
     local patch="${ver##*[.]}"
+
+    if [ "${ver}" = "1.8.0" ]; then
+        PRINT "Podman 1.8.0 is not supported" "error" 0
+        return 1
+    fi
+
+    return 0
+    # Disabled for now since CentOS currently is on podman 1.6.4
 
     if [ "${major}" -gt 1 ]; then
         return 0

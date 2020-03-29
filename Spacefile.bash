@@ -104,7 +104,7 @@ COMPILE_ENTRY()
 _COMPILE_POD()
 {
     SPACE_SIGNATURE="podName inFile outFile [srcDir]"
-    SPACE_DEP="PRINT YAML_PARSE _CONTAINER_VARS _CONTAINER_SET_VAR _QUOTE_ARG STRING_ITEM_INDEXOF STRING_ITEM_GET _GET_CONTAINER_NR _COMPILE_INGRESS _COMPILE_RUN _COMPILE_LABELS _COMPILE_ENTRYPOINT _COMPILE_CPUMEM STRING_SUBST _GET_CONTAINER_VAR _COMPILE_PODMAN _COMPILE_PROCESS FILE_REALPATH _COMPILE_ENV _COMPILE_MOUNTS _COMPILE_STARTUP_PROBE_SIGNAL _COMPILE_STARTUP_PROBE_EXIT _COMPILE_STARTUP_PROBE_TIMEOUT _COMPILE_SIGNALEXEC _COMPILE_IMAGE _COMPILE_RESTART"
+    SPACE_DEP="PRINT YAML_PARSE _CONTAINER_VARS _CONTAINER_SET_VAR _QUOTE_ARG STRING_ITEM_INDEXOF STRING_ITEM_GET _GET_CONTAINER_NR _COMPILE_INGRESS _COMPILE_RUN _COMPILE_LABELS _COMPILE_ENTRYPOINT _COMPILE_CPUMEM STRING_SUBST _GET_CONTAINER_VAR _COMPILE_PODMAN _COMPILE_PROCESS FILE_REALPATH _COMPILE_ENV _COMPILE_MOUNTS _COMPILE_STARTUP_PROBE_SIGNAL _COMPILE_STARTUP_PROBE _COMPILE_STARTUP_PROBE_TIMEOUT _COMPILE_READINESS_PROBE _COMPILE_READINESS_PROBE_TIMEOUT  _COMPILE_LIVENESS_PROBE _COMPILE_LIVENESS_PROBE_TIMEOUT _COMPILE_SIGNALEXEC _COMPILE_IMAGE _COMPILE_RESTART"
 
     local podName="${1}"
     shift
@@ -197,7 +197,7 @@ _COMPILE_POD()
             PRINT "Could not compile pod for podman runtime." "error" 0
             return 1
         fi
-        PRINT "Writing pod executable to ${outFile}." "ok" 0
+        PRINT "Writing pod executable to ${outFile}" "ok" 0
         printf "%s\\n" "${_out_pod}" >"${outFile}"
         chmod +x "${outFile}"
         printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
@@ -207,7 +207,7 @@ _COMPILE_POD()
             PRINT "Could not compile pod for executable runtime." "error" 0
             return 1
         fi
-        PRINT "Writing pod executable to ${outFile}." "ok" 0
+        PRINT "Writing pod executable to ${outFile}" "ok" 0
     else
         PRINT "Unknown podRuntime. Only 'podman' and 'executable' runtimes are supported." "error" 0
         return 1
@@ -398,15 +398,9 @@ _COMPILE_PODMAN()
                     local v="on-config"
                     _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "RESTARTPOLICY" "v"
                     v="exit"
-                    _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "WAIT" "v"
+                    _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "STARTUPPROBE" "v"
                     v="120"
-                    _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "WAITTIMEOUT" "v"
-                    v=""
-                    _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "SENDSIGNALS" "v"
-                    v=""
-                    _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "SIGNALSIG" "v"
-                    v=""
-                    _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "SIGNALCMD" "v"
+                    _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "STARTUPTIMEOUT" "v"
                     v="${volume}"
                     _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "CONFIGS" "v"
                     v="${volume}-unencrypted"
@@ -499,13 +493,14 @@ _COMPILE_PODMAN()
         if ! _COMPILE_STARTUP_PROBE_TIMEOUT; then
             return 1
         fi
-        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "WAITTIMEOUT" "value"
+        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "STARTUPTIMEOUT" "value"
 
+        ## startupProbe/exit or startupProbe/cmd
         local value=""
-        if ! _COMPILE_STARTUP_PROBE_EXIT; then
+        if ! _COMPILE_STARTUP_PROBE; then
             return 1
         fi
-        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "WAIT" "value"
+        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "STARTUPPROBE" "value"
 
         ## startupProbe/signal
         #
@@ -513,24 +508,39 @@ _COMPILE_PODMAN()
         if ! _COMPILE_STARTUP_PROBE_SIGNAL; then
             return 1
         fi
-        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "SENDSIGNALS" "value"
+        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "STARTUPSIGNAL" "value"
 
-        # TODO
-        ### readinessProbe
-        ##
-        #local value=""
-        #if ! _COMPILE_READINESS_PROBE; then
-            #return 1
-        #fi
-        #_CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "READINESS_PROBE" "value"
+        ## readinessProbe/timeout
+        #
+        local value=""
+        if ! _COMPILE_READINESS_PROBE_TIMEOUT; then
+            return 1
+        fi
+        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "READINESSTIMEOUT" "value"
 
-        ### livenessProbe
-        ##
-        #local value=""
-        #if ! _COMPILE_LIVENESS_PROBE; then
-            #return 1
-        #fi
-        #_CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "LIVENESS_PROBE" "value"
+        ## livenessProbe/cmd
+        #
+        local value=""
+        if ! _COMPILE_LIVENESS_PROBE; then
+            return 1
+        fi
+        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "LIVENESSPROBE" "value"
+
+        ## livenessProbe/timeout
+        #
+        local value=""
+        if ! _COMPILE_LIVENESS_PROBE_TIMEOUT; then
+            return 1
+        fi
+        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "LIVENESSTIMEOUT" "value"
+
+        ## livenessProbe/cmd
+        #
+        local value=""
+        if ! _COMPILE_READINESS_PROBE; then
+            return 1
+        fi
+        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "READINESSPROBE" "value"
 
         ## mounts:
         #
@@ -575,12 +585,12 @@ _COMPILE_PODMAN()
     fi
 
     ## Postfix
-    # All SENDSIGNALS must be transformed to their number.
+    # All STARTUPSIGNAL must be transformed to their number.
     local container_nr=
     for container_nr in $(seq 1 ${POD_CONTAINER_COUNT}); do
         local sendsignals=
         local sendsignals_nrs=""
-        _GET_CONTAINER_VAR "${container_nr}" "SENDSIGNALS" "sendsignals"
+        _GET_CONTAINER_VAR "${container_nr}" "STARTUPSIGNAL" "sendsignals"
         local targetcontainer=
         for targetcontainer in ${sendsignals}; do
             # Get the container nr for this name
@@ -592,7 +602,7 @@ _COMPILE_PODMAN()
             sendsignals_nrs="${sendsignals_nrs}${sendsignals_nrs:+ }${nr}"
         done
         # Overwrite with new string
-        _CONTAINER_SET_VAR "${container_nr}" "SENDSIGNALS" "sendsignals_nrs"
+        _CONTAINER_SET_VAR "${container_nr}" "STARTUPSIGNAL" "sendsignals_nrs"
     done
 
     ## Postfix
@@ -617,7 +627,7 @@ _COMPILE_PODMAN()
 
     local index=
     for index in $(seq 1 ${POD_CONTAINER_COUNT}); do
-        for var in NAME RESTARTPOLICY IMAGE WAIT WAITTIMEOUT SENDSIGNALS SIGNALSIG SIGNALCMD CONFIGS MOUNTS ENV COMMAND ARGS CPUMEM PORTS RUN; do
+        for var in NAME RESTARTPOLICY IMAGE STARTUPPROBE STARTUPTIMEOUT STARTUPSIGNAL LIVENESSPROBE LIVENESSTIMEOUT READINESSPROBE READINESSTIMEOUT SIGNALSIG SIGNALCMD CONFIGS MOUNTS ENV COMMAND ARGS CPUMEM PORTS RUN; do
             local varname="POD_CONTAINER_${var}_${index}"
             local value="${!varname}"
             _out_pod="${_out_pod}${newline}$(printf "%s=\"%s\"\\n" "${varname}" "${value}")"
@@ -760,9 +770,9 @@ _COMPILE_MOUNTS()
                         fi
                         # Add this container name to the decrypter containers send signals value
                         local sendsignals=
-                        _GET_CONTAINER_VAR "${container_nr}" "SENDSIGNALS" "sendsignals"
+                        _GET_CONTAINER_VAR "${container_nr}" "STARTUPSIGNAL" "sendsignals"
                         sendsignals="${sendsignals}${sendsignals:+ }${container_name}"
-                        _CONTAINER_SET_VAR "${container_nr}" "SENDSIGNALS" "sendsignals"
+                        _CONTAINER_SET_VAR "${container_nr}" "STARTUPSIGNAL" "sendsignals"
                     else
                         bind="./config/${volume}"
                         mounts="${mounts}${mounts:+ }-v ${bind}:${dest}:z,ro"
@@ -843,7 +853,7 @@ _COMPILE_SIGNALEXEC()
 }
 
 # Macro helper function
-_COMPILE_STARTUP_PROBE_EXIT()
+_COMPILE_STARTUP_PROBE()
 {
     _copy "value" "/containers/${index}/startupProbe/exit"
     STRING_SUBST "value" "'" "" 1
@@ -856,6 +866,7 @@ _COMPILE_STARTUP_PROBE_EXIT()
     fi
 
     if [ "${value}" = "true" ]; then
+        value="exit"
         return
     else
         value=""
@@ -882,7 +893,7 @@ _COMPILE_STARTUP_PROBE_TIMEOUT()
     STRING_SUBST "value" '"' "" 1
     value="${value:-120}"
     if [[ ! $value =~ ^[0-9]+$ ]]; then
-        PRINT "Timeout for container ${container_name} must be an integer." "error" 0
+        PRINT "Startup timeout for container ${container_name} must be an integer." "error" 0
         return 1
     fi
 }
@@ -907,6 +918,70 @@ _COMPILE_STARTUP_PROBE_SIGNAL()
             value="${value}${space}${containername}"
             space=" "
         done
+    fi
+}
+
+# Macro helper function
+_COMPILE_READINESS_PROBE()
+{
+    local args=()
+    _list "args" "/containers/${index}/readinessProbe/cmd/" "" 1
+    value=""
+    if [ "${#args[@]}" -gt 0 ]; then
+        local arg=
+        local subarg=
+        local space=""
+        for arg in "${args[@]}"; do
+            _copy "subarg" "/containers/${index}/readinessProbe/cmd/${arg}"
+            _QUOTE_ARG "subarg"
+            value="${value}${space}${subarg}"
+            space=" "
+        done
+    fi
+}
+
+# Macro helper function
+_COMPILE_READINESS_PROBE_TIMEOUT()
+{
+    _copy "value" "/containers/${index}/readinessProbe/timeout"
+    STRING_SUBST "value" "'" "" 1
+    STRING_SUBST "value" '"' "" 1
+    value="${value:-120}"
+    if [[ ! $value =~ ^[0-9]+$ ]]; then
+        PRINT "Readiness timeout for container ${container_name} must be an integer." "error" 0
+        return 1
+    fi
+}
+
+# Macro helper function
+_COMPILE_LIVENESS_PROBE()
+{
+    local args=()
+    _list "args" "/containers/${index}/livenessProbe/cmd/" "" 1
+    value=""
+    if [ "${#args[@]}" -gt 0 ]; then
+        local arg=
+        local subarg=
+        local space=""
+        for arg in "${args[@]}"; do
+            _copy "subarg" "/containers/${index}/livenessProbe/cmd/${arg}"
+            _QUOTE_ARG "subarg"
+            value="${value}${space}${subarg}"
+            space=" "
+        done
+    fi
+}
+
+# Macro helper function
+_COMPILE_LIVENESS_PROBE_TIMEOUT()
+{
+    _copy "value" "/containers/${index}/livenessProbe/timeout"
+    STRING_SUBST "value" "'" "" 1
+    STRING_SUBST "value" '"' "" 1
+    value="${value:-120}"
+    if [[ ! $value =~ ^[0-9]+$ ]]; then
+        PRINT "Liveness timeout for container ${container_name} must be an integer." "error" 0
+        return 1
     fi
 }
 
@@ -1327,9 +1402,13 @@ _CONTAINER_VARS()
 
     printf "%s\\n" "
 local POD_CONTAINER_NAME_${container_nr}=
-local POD_CONTAINER_WAIT_${container_nr}=
-local POD_CONTAINER_WAITTIMEOUT_${container_nr}=
-local POD_CONTAINER_SENDSIGNALS_${container_nr}=
+local POD_CONTAINER_STARTUPPROBE_${container_nr}=
+local POD_CONTAINER_STARTUPTIMEOUT_${container_nr}=
+local POD_CONTAINER_STARTUPSIGNAL_${container_nr}=
+local POD_CONTAINER_READINESSPROBE_${container_nr}=
+local POD_CONTAINER_READINESSTIMEOUT_${container_nr}=
+local POD_CONTAINER_LIVENESSPROBE_${container_nr}=
+local POD_CONTAINER_LIVENESSTIMEOUT_${container_nr}=
 local POD_CONTAINER_SIGNALSIG_${container_nr}=
 local POD_CONTAINER_SIGNALCMD_${container_nr}=
 local POD_CONTAINER_RESTARTPOLICY_${container_nr}=
