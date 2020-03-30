@@ -95,7 +95,7 @@ _POD_STATUS()
 
     # Note: podman pod ps in this version does not filter using regex, so --filter name matches
     # all pods who has part of the name in them, hence the grep/awk crafting.
-    podman pod ps --format "{{.Name}} {{.Status}}" |grep "^${POD} " |awk '{print $2}'
+    podman pod ps --format "{{.Name}} {{.Status}}" |grep "^${POD}\>" |awk '{print $2}'
 }
 
 _KILL_POD()
@@ -1227,11 +1227,11 @@ _SIGNAL()
         # Iterate over each name and append the POD name
         for container in "$@"; do
             container="${container}-${POD}"
-            containerNames="${containerNames} ${container}"
             if ! _CONTAINER_EXISTS "${container}"; then
                 PRINT "Container ${container} does not exist in this pod" "error" 0
                 return 1
             fi
+            containerNames="${containerNames} ${container}"
         done
     else
         # Get all containers
@@ -1349,6 +1349,36 @@ _PURGE()
     _DESTROY_VOLUMES
 }
 
+# Enter shell in a container
+_SHELL()
+{
+    SPACE_SIGNATURE="container useBash"
+    SPACE_DEP="_GET_CONTAINER_VAR _CONTAINER_EXISTS"
+
+    local container="${1}"
+    shift
+
+    local useBash="${1:-false}"
+    shift
+
+    local containerName=
+    if [ -n "${container}" ]; then
+        containerName="${container}-${POD}"
+        if ! _CONTAINER_EXISTS "${containerName}"; then
+            PRINT "Container ${containerName} does not exist in this pod" "error" 0
+            return 1
+        fi
+    else
+        _GET_CONTAINER_VAR "${POD_CONTAINER_COUNT}" "NAME" "containerName"
+    fi
+
+    if [ "${useBash}" = "true" ]; then
+        podman exec -ti ${containerName} bash
+    else
+        podman exec -ti ${containerName} sh
+    fi
+}
+
 # Exec a command inside a container, repeatedly if not getting exit code 0.
 # Sleep 1 second between each exec and timeout eventually (killing the command if necessary.
 _RUN_PROBE()
@@ -1397,7 +1427,18 @@ _RUN_PROBE()
 # Check if the pod is ready to receive traffic.
 _READINESS_PROBE()
 {
-    SPACE_DEP="_RUN_PROBE _CONTAINER_STATUS PRINT"
+    SPACE_DEP="_RUN_PROBE _CONTAINER_STATUS PRINT _POD_EXISTS _POD_STATUS"
+
+    if ! _POD_EXISTS; then
+        PRINT "Pod ${POD} does not exist" "debug" 0
+        return 1
+    fi
+
+    local podstatus="$(_POD_STATUS)"
+    if [ "${podstatus}" != "Running" ]; then
+        PRINT "Pod ${POD} is not in the running state" "debug" 0
+        return 1
+    fi
 
     local container_nr=
     for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
@@ -1592,7 +1633,7 @@ _GETOPTS()
 POD_ENTRY()
 {
     SPACE_SIGNATURE="action [args]"
-    SPACE_DEP="_VERSION _SHOW_USAGE _CREATE _RUN _PURGE _RELOAD_CONFIG _RM _RERUN _SIGNAL _LOGS _STOP _START _KILL _CREATE_VOLUMES _DOWNLOAD _SHOW_INFO _SHOW_STATUS _READINESS_PROBE _LIVENESS_PROBE _RAMDISK_CONFIG _CHECK_PODMAN _GET_CONTAINER_VAR _GETOPTS"
+    SPACE_DEP="_VERSION _SHOW_USAGE _CREATE _RUN _PURGE _RELOAD_CONFIG _RM _RERUN _SIGNAL _LOGS _STOP _START _KILL _CREATE_VOLUMES _DOWNLOAD _SHOW_INFO _SHOW_STATUS _READINESS_PROBE _LIVENESS_PROBE _RAMDISK_CONFIG _CHECK_PODMAN _GET_CONTAINER_VAR _GETOPTS _SHELL"
 
     # This is for display purposes only and shows the runtime type and the version of the runtime impl.
     local RUNTIME_VERSION="podman 0.1"
@@ -1689,6 +1730,14 @@ POD_ENTRY()
             _READINESS_PROBE
         elif [ "${action}" = "liveness" ]; then
             _LIVENESS_PROBE
+        elif [ "${action}" = "shell" ]; then
+            local _out_B="false"
+
+            if ! _GETOPTS "B" "" 0 1 "$@"; then
+                printf "Usage: pod shell [container] [-B]\\n" >&2
+                return 1
+            fi
+            _SHELL "${_out_rest}" "${_out_B}"
         else
             PRINT "Unknown command" "error" 0
             return 1

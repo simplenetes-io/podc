@@ -115,6 +115,14 @@ POD_ENTRY()
             _READINESS_PROBE
         elif [ "${action}" = "liveness" ]; then
             _LIVENESS_PROBE
+        elif [ "${action}" = "shell" ]; then
+            local _out_B="false"
+
+            if ! _GETOPTS "B" "" 0 1 "$@"; then
+                printf "Usage: pod shell [container] [-B]\\n" >&2
+                return 1
+            fi
+            _SHELL "${_out_rest}" "${_out_B}"
         else
             PRINT "Unknown command" "error" 0
             return 1
@@ -410,11 +418,11 @@ _SIGNAL()
         # Iterate over each name and append the POD name
         for container in "$@"; do
             container="${container}-${POD}"
-            containerNames="${containerNames} ${container}"
             if ! _CONTAINER_EXISTS "${container}"; then
                 PRINT "Container ${container} does not exist in this pod" "error" 0
                 return 1
             fi
+            containerNames="${containerNames} ${container}"
         done
     else
         # Get all containers
@@ -677,6 +685,17 @@ _READINESS_PROBE()
 {
     local _SPACE_NAME="_READINESS_PROBE"
 
+    if ! _POD_EXISTS; then
+        PRINT "Pod ${POD} does not exist" "debug" 0
+        return 1
+    fi
+
+    local podstatus="$(_POD_STATUS)"
+    if [ "${podstatus}" != "Running" ]; then
+        PRINT "Pod ${POD} is not in the running state" "debug" 0
+        return 1
+    fi
+
     local container_nr=
     for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
         local container=
@@ -878,6 +897,34 @@ _GETOPTS()
     fi
 }
 
+_SHELL()
+{
+    local _SPACE_NAME="_SHELL"
+
+    local container="${1}"
+    shift
+
+    local useBash="${1:-false}"
+    shift
+
+    local containerName=
+    if [ -n "${container}" ]; then
+        containerName="${container}-${POD}"
+        if ! _CONTAINER_EXISTS "${containerName}"; then
+            PRINT "Container ${containerName} does not exist in this pod" "error" 0
+            return 1
+        fi
+    else
+        _GET_CONTAINER_VAR "${POD_CONTAINER_COUNT}" "NAME" "containerName"
+    fi
+
+    if [ "${useBash}" = "true" ]; then
+        podman exec -ti ${containerName} bash
+    else
+        podman exec -ti ${containerName} sh
+    fi
+}
+
 _CHECK_HOST_MOUNTS()
 {
     local _SPACE_NAME="_CHECK_HOST_MOUNTS"
@@ -976,7 +1023,7 @@ _POD_STATUS()
 
     # Note: podman pod ps in this version does not filter using regex, so --filter name matches
     # all pods who has part of the name in them, hence the grep/awk crafting.
-    podman pod ps --format "{{.Name}} {{.Status}}" |grep "^${POD} " |awk '{print $2}'
+    podman pod ps --format "{{.Name}} {{.Status}}" |grep "^${POD}\>" |awk '{print $2}'
 }
 
 PRINT()

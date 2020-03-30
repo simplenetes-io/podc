@@ -521,22 +521,19 @@ For executable pods remove all traces of activity, such as log files.
 # return 0 if ready
 # return 1 if not ready
 ```
-Check if this pod/service is ready to receive traffic.
+Check if this pod is ready to receive traffic.
 
-For container pods the pod script will run connections against containers to determine their ready state.
+For container pods the pod script will run the defined command.
 
-For executable pods they need to understand their rediness themselves.
+For executable pods they need to understand themselves what "readiness" means and return 0 or 1.
 
 ```sh
 ./pod liveness
-# return 0 if alive
-# return 1 if not alive
+# return 0 always
 ```
-Check if this service/pod is still alive.
+Check so that the containers are still alive. Any container not responding properly will be killed, and it is then the subject of its restart policy.
 
-For container pods the pod.sh script will run connections against containers to determine their liveness state.
-
-For executable pods they need to understand their liveness themselves.
+For executable pods they need to understand themselves what "liveness" means and handle it appropriately.
 
 ```sh
 ./pod ramdisk-config
