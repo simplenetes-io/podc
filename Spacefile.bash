@@ -1087,12 +1087,11 @@ _COMPILE_INGRESS()
 
         if [ "${useTargetPorts}" = "false" ]; then
             if [ -n "${targetPort}" ]; then
-                PRINT "targetPort now allowed for this pod runtime." "error" 0
+                PRINT "targetPort not allowed for this pod runtime." "error" 0
                 return 1
             fi
             targetPort="0"
         fi
-
 
         if [ -n "${hostPort}" ]; then
             if [[ ! $hostPort =~ ^([0-9])+$ ]]; then
@@ -1100,18 +1099,40 @@ _COMPILE_INGRESS()
                 return 1
             fi
 
-            if [[ ! $targetPort =~ ^([0-9])+$ ]]; then
-                PRINT "targetPort must be an integer." "error" 0
+            if [ "${hostPort}" -lt "1" ] || [ "${hostPort}" -gt "65535" ]; then
+                PRINT "Host port must be between 1 and 65535." "error" 0
                 return 1
             fi
 
-            if [ -z "${clusterPort}" ]; then
+            if [ "${useTargetPorts}" = "true" ]; then
+                if [[ ! $targetPort =~ ^([0-9])+$ ]]; then
+                    PRINT "targetPort must be an integer." "error" 0
+                    return 1
+                fi
+
+                if [ "${targetPort}" -lt "1" ] || [ "${targetPort}" -gt "65535" ]; then
+                    PRINT "Target port must be between 1 and 65535." "error" 0
+                    return 1
+                fi
+            fi
+
+            if [ -n "${clusterPort}" ]; then
+                if [[ ! $clusterPort =~ ^([0-9])+$ ]]; then
+                    PRINT "clusterPort must be an integer." "error" 0
+                    return 1
+                fi
+
+                if [ "${clusterPort}" -lt "1024" ] || [ "${clusterPort}" -gt "65535" ]; then
+                    PRINT "Cluster port must be between 1024 and 65535." "error" 0
+                    return 1
+                fi
+
+                if [ "${clusterPort}" -ge "30000" ] && [ "${clusterPort}" -le "32767" ]; then
+                    PRINT "Cluster port cannt be in the reserved range of 30000-32767." "error" 0
+                    return 1
+                fi
+            else
                 clusterPort="0"
-            fi
-
-            if [[ ! $clusterPort =~ ^([0-9])+$ ]]; then
-                PRINT "clusterPort must be an integer." "error" 0
-                return 1
             fi
 
             portmappings="${portmappings} ${clusterPort}:${hostPort}:${targetPort}:${maxconn}:${sendproxy}"
@@ -1241,6 +1262,11 @@ _COMPILE_INGRESS()
                 httpSpecific=1
             else
                 # server backend.
+                # This requires
+                if [ -z "${hostPort}" ]; then
+                    PRINT "This pod yaml ingress is lacking a hostPort definition." "error" 0
+                    return 1
+                fi
                 # This requires a clusterPort >0
                 if [ "${clusterPort}" -eq 0 ]; then
                     PRINT "This pod yaml ingress is lacking a clusterPort definition." "error" 0

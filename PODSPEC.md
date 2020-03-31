@@ -24,7 +24,8 @@ Simplenetes does not define a special case for command, HTTP or TCP probes, it i
 If needing to delay the Liveness probe then use a Startup probe to either determine that livenss is safe to run now or which simply sleeps a number of seconds before letting the pod creation continue.
 
 ## Proxy and Ingress confs
-When a Pod is compiled, the compiler outputs alongside the `pod` executable possibly two extra files:
+When a Pod is compiled, the compiler outputs alongside the `pod` executable possibly two extra files.  
+These files only make sense when using pods not as standalone pods but within the Simplenetes pod orchestrator.
 
     - pod.proxy.conf
         A conf file which describes the clusterPort->HostPort relations for the Pod, and some more.
@@ -245,15 +246,16 @@ containers:
 
             # hostPort is the what port of the node host machine we bind the container part to.
             # Required if using clustertPort.
+            # In the context of a snt cluster hostPort can be assigned as `${HOSTPORTAUTOx}` and a unique host port will be assigned. The `x` is an integer meaning that if `${HOSTPORTAUTO1}` is used in two places in the yaml the same host port value will be substituted in.
             hostPort: 8081
 
             # Maximum connection count which the proxy will direct to this targetPort
-            # Only relevant when usin a clusterPort
+            # Only relevant when using a clusterPort
             # Default is 4096
             maxConn: 1024
 
             # Set to true to have the proxy connect using the PROXY-PROTOCOL
-            # Only relevant when usin a clusterPort
+            # Only relevant when using a clusterPort
             # Default is false.
             sendProxy: true
 
@@ -264,9 +266,12 @@ containers:
             # This is a TCP port in a given range which is cluster wide.
             # Anywhere in the cluster a pod can connect to this targetPort by connecting to this clusterPort on a proxy.
             # Optional property, but required when wanting to route traffic within the cluster to the targetPort, either from other Pods or from the Ingress.
+            # Only relevant when using pods in a cluster orchestrated by Simplenetes.
+            # In the context of a snt cluster clusterPort can be assigned as `${CLUSTERPORTAUTOx}` and a unique cluster port will be assigned. The `x` is an integer meaning that if `${CLUSTERPORTAUTO1}` is used in two places in the yaml the same cluster port value will be substituted in.
             clusterPort: 1234
 
             # Define Ingress properties for the clusterPort.
+            # Only relevant when using pods in a cluster orchestrated by Simplenetes.
             ingress:
               # This first ingress configuration example does not route traffic to any backend, it only redirects traffic up in the Ingress layer,
               # therefore it does not strictly require targetPort, hostPort and clusterPort.
@@ -356,15 +361,16 @@ executable:
         - hostPort: 8080
 
           # Optional property, but required when wanting to route traffic within the cluster to the hostPort, either from other Pods or from the Ingress.
+          # Only relevant when using pods in a cluster orchestrated by Simplenetes.
           clusterPort: 1234
 
           # Maximum connection count which the proxy will direct to this hostPort.
-          # Only relevant when usin a clusterPort
+          # Only relevant when using a clusterPort
           # Default is 4096
           maxConn: 1024
 
           # Set to true to have the proxy connect using the PROXY-PROTOCOL
-          # Only relevant when usin a clusterPort
+          # Only relevant when using a clusterPort
           # Default is false.
           sendProxy: true
 
