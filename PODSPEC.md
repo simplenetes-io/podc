@@ -1,5 +1,12 @@
 # Simplenetes Pod specifications
 
+## Naming
+Pod names, container names and volume names must all match `a-z`, `0-9` and underscore `(_)`, and has to start with a letter.
+
+Container names are internally always automatically suffixed with `-podname-version` as they are created with podman. When referring to a container when calling the pod script the suffix is not expected.
+
+Volume names are internally always automatically suffixed with `-podname` as they are created with podman. Note that since they do not have the version in their suffix volumes with the same names are shared between different pod versions.
+
 ## Configs
 A config directory in a pod is something which the pod can mount to a container. The config dirs in a pod repo can be `imported` into the cluster project and from there they are available to the pod after it is compiled.
 

@@ -200,8 +200,16 @@ _COMPILE_POD()
         PRINT "Writing pod executable to ${outFile}" "ok" 0
         printf "%s\\n" "${_out_pod}" >"${outFile}"
         chmod +x "${outFile}"
-        printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
-        printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+        if [ -n "${POD_PROXYCONF}" ]; then
+            printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
+        else
+            rm -f "${outFile}.proxy.conf"
+        fi
+        if [ -n "${POD_INGRESSCONF}" ]; then
+            printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+        else
+            rm -f "${outFile}.ingress.conf"
+        fi
     elif [ "${podRuntime}" = "executable" ]; then
         if ! _COMPILE_PROCESS "${podName}" "${podVersion}" "${srcDir}" "${outFile}"; then
             PRINT "Could not compile pod for executable runtime." "error" 0
@@ -253,8 +261,16 @@ _COMPILE_PROCESS()
         return 1
     fi
 
-    printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
-    printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+    if [ -n "${POD_PROXYCONF}" ]; then
+        printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
+    else
+        rm -f "${outFile}.proxy.conf"
+    fi
+    if [ -n "${POD_INGRESSCONF}" ]; then
+        printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+    else
+        rm -f "${outFile}.ingress.conf"
+    fi
 
     # Copy the executable
     cp "${executable}" "${outFile}"
@@ -330,7 +346,7 @@ _COMPILE_PODMAN()
             volume="${volume}${volumesuffix}"
         fi
 
-        if [[ $volume =~ ^[a-z0-9]([-a-z0-9_\.]*[a-z0-9])?$ ]]; then
+        if [[ $volume =~ ^[a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
             # Name is OK
             # Check for duplicates
             if STRING_ITEM_INDEXOF "${all_volumes}" "${volume}"; then
@@ -339,7 +355,7 @@ _COMPILE_PODMAN()
                 return 1
             fi
         else
-            PRINT "Volume name ${volume} must match [a-zA-Z0-9_.-]. Must start and end with [a-z0-9]." "error" 0
+            PRINT "Volume name '${volume}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter" "error" 0
             return 1
         fi
 
@@ -436,8 +452,8 @@ _COMPILE_PODMAN()
         _copy "container_name" "/containers/${index}/name"
         STRING_SUBST "container_name" "'" "" 1
         STRING_SUBST "container_name" '"' "" 1
-        if [[ ! $container_name =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
-            PRINT "Container name ${container_name} has invalid characters, only lowercase a-z, 0-9 and '-' allowed. Must start and end with a character or number." "error" 0
+        if [[ ! $container_name  =~ ^[a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
+            PRINT "Container name '${container_name}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter" "error" 0
             return 1
         fi
         if STRING_ITEM_INDEXOF "${container_names}" "${container_name}"; then
@@ -606,7 +622,7 @@ _COMPILE_PODMAN()
     done
 
     ## Postfix
-    # All container names must be suffixed with the podName
+    # All container names must be suffixed with the podName-version
     for container_nr in $(seq 1 ${POD_CONTAINER_COUNT}); do
         local containername=
         _GET_CONTAINER_VAR "${container_nr}" "NAME" "containername"
@@ -1000,7 +1016,7 @@ _COMPILE_ENV()
             STRING_SUBST "subarg" "'" "" 1
             STRING_SUBST "subarg" '"' "" 1
             if [[ ! $subarg =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
-                PRINT "Env variable name contains illegal characters: ${subarg}." "error" 0
+                PRINT "Env variable name contains illegal characters: ${subarg}. a-zA-Z0-9_, ha sto start with a letter." "error" 0
                 return 1
             fi
             _copy "subarg2" "/containers/${index}/env/${arg}/value"

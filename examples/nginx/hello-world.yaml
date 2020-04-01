@@ -3,7 +3,7 @@ podVersion: 0.0.1
 podRuntime: podman
 
 volumes:
-    - name: nginx-files
+    - name: nginx_files
       type: config
 containers:
     - name: webserver
@@ -31,7 +31,7 @@ containers:
           - kill: HUP
       mounts:
           - dest: /website_files
-            volume: nginx-files
+            volume: nginx_files
       expose:
           - targetPort: 80
             hostPort: 8080

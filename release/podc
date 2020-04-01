@@ -213,8 +213,16 @@ _COMPILE_POD()
         PRINT "Writing pod executable to ${outFile}" "ok" 0
         printf "%s\\n" "${_out_pod}" >"${outFile}"
         chmod +x "${outFile}"
-        printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
-        printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+        if [ -n "${POD_PROXYCONF}" ]; then
+            printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
+        else
+            rm -f "${outFile}.proxy.conf"
+        fi
+        if [ -n "${POD_INGRESSCONF}" ]; then
+            printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+        else
+            rm -f "${outFile}.ingress.conf"
+        fi
     elif [ "${podRuntime}" = "executable" ]; then
         if ! _COMPILE_PROCESS "${podName}" "${podVersion}" "${srcDir}" "${outFile}"; then
             PRINT "Could not compile pod for executable runtime." "error" 0
@@ -759,12 +767,11 @@ _COMPILE_INGRESS()
 
         if [ "${useTargetPorts}" = "false" ]; then
             if [ -n "${targetPort}" ]; then
-                PRINT "targetPort now allowed for this pod runtime." "error" 0
+                PRINT "targetPort not allowed for this pod runtime." "error" 0
                 return 1
             fi
             targetPort="0"
         fi
-
 
         if [ -n "${hostPort}" ]; then
             if [[ ! $hostPort =~ ^([0-9])+$ ]]; then
@@ -772,18 +779,40 @@ _COMPILE_INGRESS()
                 return 1
             fi
 
-            if [[ ! $targetPort =~ ^([0-9])+$ ]]; then
-                PRINT "targetPort must be an integer." "error" 0
+            if [ "${hostPort}" -lt "1" ] || [ "${hostPort}" -gt "65535" ]; then
+                PRINT "Host port must be between 1 and 65535." "error" 0
                 return 1
             fi
 
-            if [ -z "${clusterPort}" ]; then
+            if [ "${useTargetPorts}" = "true" ]; then
+                if [[ ! $targetPort =~ ^([0-9])+$ ]]; then
+                    PRINT "targetPort must be an integer." "error" 0
+                    return 1
+                fi
+
+                if [ "${targetPort}" -lt "1" ] || [ "${targetPort}" -gt "65535" ]; then
+                    PRINT "Target port must be between 1 and 65535." "error" 0
+                    return 1
+                fi
+            fi
+
+            if [ -n "${clusterPort}" ]; then
+                if [[ ! $clusterPort =~ ^([0-9])+$ ]]; then
+                    PRINT "clusterPort must be an integer." "error" 0
+                    return 1
+                fi
+
+                if [ "${clusterPort}" -lt "1024" ] || [ "${clusterPort}" -gt "65535" ]; then
+                    PRINT "Cluster port must be between 1024 and 65535." "error" 0
+                    return 1
+                fi
+
+                if [ "${clusterPort}" -ge "30000" ] && [ "${clusterPort}" -le "32767" ]; then
+                    PRINT "Cluster port cannt be in the reserved range of 30000-32767." "error" 0
+                    return 1
+                fi
+            else
                 clusterPort="0"
-            fi
-
-            if [[ ! $clusterPort =~ ^([0-9])+$ ]]; then
-                PRINT "clusterPort must be an integer." "error" 0
-                return 1
             fi
 
             portmappings="${portmappings} ${clusterPort}:${hostPort}:${targetPort}:${maxconn}:${sendproxy}"
@@ -913,6 +942,11 @@ _COMPILE_INGRESS()
                 httpSpecific=1
             else
                 # server backend.
+                # This requires
+                if [ -z "${hostPort}" ]; then
+                    PRINT "This pod yaml ingress is lacking a hostPort definition." "error" 0
+                    return 1
+                fi
                 # This requires a clusterPort >0
                 if [ "${clusterPort}" -eq 0 ]; then
                     PRINT "This pod yaml ingress is lacking a clusterPort definition." "error" 0
@@ -1148,7 +1182,7 @@ _COMPILE_PODMAN()
             volume="${volume}${volumesuffix}"
         fi
 
-        if [[ $volume =~ ^[a-z0-9]([-a-z0-9_\.]*[a-z0-9])?$ ]]; then
+        if [[ $volume =~ ^[a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
             # Name is OK
             # Check for duplicates
             if STRING_ITEM_INDEXOF "${all_volumes}" "${volume}"; then
@@ -1157,7 +1191,7 @@ _COMPILE_PODMAN()
                 return 1
             fi
         else
-            PRINT "Volume name ${volume} must match [a-zA-Z0-9_.-]. Must start and end with [a-z0-9]." "error" 0
+            PRINT "Volume name '${volume}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter" "error" 0
             return 1
         fi
 
@@ -1254,8 +1288,8 @@ _COMPILE_PODMAN()
         _copy "container_name" "/containers/${index}/name"
         STRING_SUBST "container_name" "'" "" 1
         STRING_SUBST "container_name" '"' "" 1
-        if [[ ! $container_name =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
-            PRINT "Container name ${container_name} has invalid characters, only lowercase a-z, 0-9 and '-' allowed. Must start and end with a character or number." "error" 0
+        if [[ ! $container_name  =~ ^[a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
+            PRINT "Container name '${container_name}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter" "error" 0
             return 1
         fi
         if STRING_ITEM_INDEXOF "${container_names}" "${container_name}"; then
@@ -1424,7 +1458,7 @@ _COMPILE_PODMAN()
     done
 
     ## Postfix
-    # All container names must be suffixed with the podName
+    # All container names must be suffixed with the podName-version
     for container_nr in $(seq 1 ${POD_CONTAINER_COUNT}); do
         local containername=
         _GET_CONTAINER_VAR "${container_nr}" "NAME" "containername"
@@ -1494,8 +1528,16 @@ _COMPILE_PROCESS()
         return 1
     fi
 
-    printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
-    printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+    if [ -n "${POD_PROXYCONF}" ]; then
+        printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
+    else
+        rm -f "${outFile}.proxy.conf"
+    fi
+    if [ -n "${POD_INGRESSCONF}" ]; then
+        printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+    else
+        rm -f "${outFile}.ingress.conf"
+    fi
 
     # Copy the executable
     cp "${executable}" "${outFile}"
@@ -1517,7 +1559,7 @@ _COMPILE_ENV()
             STRING_SUBST "subarg" "'" "" 1
             STRING_SUBST "subarg" '"' "" 1
             if [[ ! $subarg =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
-                PRINT "Env variable name contains illegal characters: ${subarg}." "error" 0
+                PRINT "Env variable name contains illegal characters: ${subarg}. a-zA-Z0-9_, ha sto start with a letter." "error" 0
                 return 1
             fi
             _copy "subarg2" "/containers/${index}/env/${arg}/value"
