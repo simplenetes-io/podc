@@ -19,6 +19,152 @@ SPACE_LOG_ENABLE_COLORS="${SPACE_LOG_ENABLE_COLORS:-1}"
 SPACE_ASSERT_EXIT="${SPACE_ASSERT_EXIT:-0}"
 SPACE_MUTE_EXIT="${SPACE_MUTE_EXIT:-0}"
 SPACE_MUTE_EXIT_MESSAGE="${SPACE_MUTE_EXIT_MESSAGE:-1}"
+PODC_CMDLINE()
+{
+    local _SPACE_NAME="PODC_CMDLINE"
+
+    local _out_rest=""
+    local _out_h="false"
+    local _out_V="false"
+    local _out_p="true"
+
+    local _out_f=""
+    local _out_o=""
+    local _out_d=""
+
+    if ! _GETOPTS "h V" "f o d p" 0 1 "$@"; then
+        printf "Usage: pod [podname] [-f infile] [-o outfile] [-d srcdir] [-p true|false]\\n" >&2
+        return 1
+    fi
+
+    if [ "${_out_h}" = "true" ]; then
+        USAGE
+        return
+    fi
+
+    if [ "${_out_V}" = "true" ]; then
+        VERSION
+        return
+    fi
+
+    COMPILE_ENTRY "${_out_rest}" "${_out_f}" "${_out_o}" "${_out_d}" "${_out_p}"
+}
+
+USAGE()
+{
+    local _SPACE_NAME="USAGE"
+    printf "%s\\n" "Usage:
+
+    podc -h
+        Output this help
+
+    podc -V
+        Output version
+
+    podc [podname] [-f infile] [-o outfile] [-d srcdir] [-p]
+
+        podname
+            is the name of the pod, default is to take the directory name,
+            but which might not be a valid name. Only a-z0-9 and underscore allowed.
+            Must start with a letter.
+
+        -f infile
+            optional path to the pod.yaml file.
+            Default is to look for pod.yaml in the current directory.
+
+        -o outfile
+            optional path where to write the executable pod file.
+            Default is \"pod\" in the same directory as the pod yaml file.
+
+        -p true|false (default false)
+            optional flag do perform preprocessing on the pod.yaml file or not.
+
+        -d srcdir
+            Optional directory path to use as source directory if \"infile\"
+            is in another directory.
+            This feature is used by other tools who do preprocessing
+            on the original pod.yaml file and place a temporary file elsewhere.
+            It can also be used to override the home directory of host volumes with relative mount points,
+            then the srcdir is the basedir, otherwise it is the dir of infile.
+
+" >&2
+}
+
+_GETOPTS()
+{
+    local _SPACE_NAME="_GETOPTS"
+
+    local simpleSwitches="${1}"
+    shift
+
+    local richSwitches="${1}"
+    shift
+
+    local minPositional="${1:-0}"
+    shift
+
+    local maxPositional="${1:-0}"
+    shift
+
+    _out_rest=""
+
+    local options=""
+    local option=
+    for option in ${richSwitches}; do
+        options="${options}${option}:"
+    done
+
+    local posCount="0"
+    while [ "$#" -gt 0 ]; do
+        local flag="${1#-}"
+        if [ "${flag}" = "${1}" ]; then
+            # Non switch
+            posCount="$((posCount+1))"
+            if [ "${posCount}" -gt "${maxPositional}" ]; then
+                PRINT "Too many positional argumets, max ${maxPositional}" "error" 0
+                return 1
+            fi
+            _out_rest="${_out_rest}${_out_rest:+ }${1}"
+            shift
+            continue
+        fi
+        local flag2=
+        STRING_SUBSTR "${flag}" 0 1 "flag2"
+        if STRING_ITEM_INDEXOF "${simpleSwitches}" "${flag2}"; then
+            if [ "${#flag}" -gt 1 ]; then
+                PRINT "Invalid option: -${flag}" "error" 0
+                return 1
+            fi
+            eval "_out_${flag}=\"true\""
+            shift
+            continue
+        fi
+
+        local OPTIND=1
+        getopts ":${options}" "flag"
+        case "${flag}" in
+            \?)
+                PRINT "Unknown option ${1-}" "error" 0
+                return 1
+                ;;
+            :)
+                PRINT "Option -${OPTARG-} requires an argument" "error" 0
+                return 1
+                ;;
+            *)
+                STRING_ESCAPE "OPTARG"
+                eval "_out_${flag}=\"${OPTARG}\""
+                ;;
+        esac
+        shift $((OPTIND-1))
+    done
+
+    if [ "${posCount}" -lt "${minPositional}" ]; then
+        PRINT "Too few positional argumets, min ${minPositional}" "error" 0
+        return 1
+    fi
+}
+
 COMPILE_ENTRY()
 {
     local _SPACE_NAME="COMPILE_ENTRY"
@@ -44,11 +190,6 @@ COMPILE_ENTRY()
         PRINT "No pod name given as first argument, assuming: ${podName}" "info" 0
     fi
 
-    if [ "${podName}" = "-h" ] || [ "${podName}" = "--help" ]; then
-        _USAGE
-        return 1
-    fi
-
     if [ -z "${inFile}" ]; then
         inFile="pod.yaml"
         PRINT "No in file given as second argument, assuming: ${inFile}" "info" 0
@@ -58,7 +199,6 @@ COMPILE_ENTRY()
 
     if [ ! -f "${inFile}" ]; then
         PRINT "Yaml file does not exist." "error" 0
-        _USAGE
         return 1
     fi
 
@@ -113,6 +253,153 @@ COMPILE_ENTRY()
     if ! _COMPILE_POD "${podName}" "${yamlfile}" "${outFile}" "${srcDir}"; then
         return 1
     fi
+}
+
+VERSION()
+{
+    local _SPACE_NAME="VERSION"
+    printf "%s\\n" "Simplenetes pod compiler version 0.1. apiVersion: 1.0.0-beta1"
+}
+
+PRINT()
+{
+    local color=''
+    local header=''
+    [ "${3:-1}" = 1 ] && {
+        local _SPACE_NAME="${_SPACE_NAME:-anonymous}: ";
+    } || {
+        local _SPACE_NAME="";
+    }
+
+    case "${2:-info}" in
+        error)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 1 ]; then return; fi
+            header="[ERROR] "; color="\033[31m"
+            ;;
+        security)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 1 ]; then return; fi
+            header="[SEC]   "; color="\033[35m"
+            ;;
+        warning)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 2 ]; then return; fi
+            header="[WARN]  "; color="\033[33m"
+            ;;
+        ok)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 3 ]; then return; fi
+            header="[OK]    "; color="\033[32m"
+            ;;
+        info)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 4 ]; then return; fi
+            header="[INFO]  "; color="\033[37m"
+            ;;
+        debug)
+            if [ "${SPACE_LOG_LEVEL:-4}" -lt 5 ]; then return; fi
+            header="[DEBUG] "; color=""
+            ;;
+        *)
+            return
+            ;;
+    esac
+    if [ "${SPACE_LOG_ENABLE_COLORS}" = "1" ] && [ -t 2 ]; then
+        printf "${color}%s%s%s\033[0m\n" "${header}" "${_SPACE_NAME}" "${1}" >&2
+    else
+        printf "%s%s%s\n" "${header}" "${_SPACE_NAME}" "${1}" >&2
+    fi
+}
+
+STRING_SUBSTR()
+{
+    local _SPACE_NAME="STRING_SUBSTR"
+
+    # shellcheck disable=SC2034
+    local __sopriv="${1}"
+    shift
+
+    local __index="${1}"
+    shift
+
+    local __length="${1}"
+    shift
+
+    local __outvar="${1:-}"
+    shift $(( $# > 0 ? 1 : 0 ))
+
+    local __strlength="${#__sopriv}"
+
+    if [ "${__index}" -lt 0 ]; then
+        __index=$((__strlength+__index))
+    fi
+
+    if [ "${__index}" -ge 0 ]; then
+        if [ "${__length}" = "" ]; then
+            __length=$((__strlength-__index))
+        fi
+
+        if [ "${__length}" -lt 0 ]; then
+            __length=$((__strlength-__index+__length))
+        fi
+
+        if [ "$((__index+__length))" -le "${#__sopriv}" ]; then
+            local __wildcard=
+            STRING_REPEAT "?" "${__index}" "" "__wildcard"
+            local __substr="${__sopriv#${__wildcard}}"
+            STRING_REPEAT "?" "$((${#__substr}-__length))" "" "__wildcard"
+            __substr="${__substr%${__wildcard}}"
+            if [ -n "${__outvar}" ]; then
+                eval "${__outvar}=\"\${__substr}\""
+            else
+                printf "%s\\n" "${__outvar}"
+            fi
+            return 0
+        fi
+
+    fi
+
+    if [ -n "${__outvar}" ]; then
+        eval "${__outvar}=\"\""
+    fi
+}
+
+STRING_INDEXOF()
+{
+    local _SPACE_NAME="STRING_INDEXOF"
+
+    local substr="${1}"
+    shift
+
+    local string="${1}"
+    shift
+
+    local varname="${1-}"
+    shift $(( $# > 0 ? 1 : 0 ))
+
+    local rest="${string%%${substr}*}"
+
+    if [ "${rest}" = "${string}" ]; then
+        if [ -n "${varname}" ]; then
+            eval "${varname}=\"-1\""
+        fi
+        return 1
+    fi
+
+    if [ -n "${varname}" ]; then
+        eval "${varname}=\"${#rest}\""
+    fi
+    return 0
+}
+
+STRING_ESCAPE()
+{
+    local _SPACE_NAME="STRING_ESCAPE"
+
+    local ___char=
+    for ___char in \" \$ \( \) \< \> \| \& \/; do
+        case "${2-\"\$}" in
+            *${___char}*)
+                _STRING_ESCAPE "${1}" "${___char}"
+                ;;
+        esac
+    done
 }
 
 _COMPILE_POD()
@@ -232,52 +519,6 @@ _COMPILE_POD()
     else
         PRINT "Unknown podRuntime. Only 'podman' and 'executable' runtimes are supported." "error" 0
         return 1
-    fi
-}
-
-PRINT()
-{
-    local color=''
-    local header=''
-    [ "${3:-1}" = 1 ] && {
-        local _SPACE_NAME="${_SPACE_NAME:-anonymous}: ";
-    } || {
-        local _SPACE_NAME="";
-    }
-
-    case "${2:-info}" in
-        error)
-            if [ "${SPACE_LOG_LEVEL:-4}" -lt 1 ]; then return; fi
-            header="[ERROR] "; color="\033[31m"
-            ;;
-        security)
-            if [ "${SPACE_LOG_LEVEL:-4}" -lt 1 ]; then return; fi
-            header="[SEC]   "; color="\033[35m"
-            ;;
-        warning)
-            if [ "${SPACE_LOG_LEVEL:-4}" -lt 2 ]; then return; fi
-            header="[WARN]  "; color="\033[33m"
-            ;;
-        ok)
-            if [ "${SPACE_LOG_LEVEL:-4}" -lt 3 ]; then return; fi
-            header="[OK]    "; color="\033[32m"
-            ;;
-        info)
-            if [ "${SPACE_LOG_LEVEL:-4}" -lt 4 ]; then return; fi
-            header="[INFO]  "; color="\033[37m"
-            ;;
-        debug)
-            if [ "${SPACE_LOG_LEVEL:-4}" -lt 5 ]; then return; fi
-            header="[DEBUG] "; color=""
-            ;;
-        *)
-            return
-            ;;
-    esac
-    if [ "${SPACE_LOG_ENABLE_COLORS}" = "1" ] && [ -t 2 ]; then
-        printf "${color}%s%s%s\033[0m\n" "${header}" "${_SPACE_NAME}" "${1}" >&2
-    else
-        printf "%s%s%s\n" "${header}" "${_SPACE_NAME}" "${1}" >&2
     fi
 }
 
@@ -457,18 +698,14 @@ TEXT_GET_ENV()
     done
 }
 
-_USAGE()
-{
-    local _SPACE_NAME="_USAGE"
-    printf "%s\\n" "Usage:
-    podc podName inFile [buildDir doPreprocessing true|false]" >&2
-}
-
 FILE_REALPATH()
 {
     local _SPACE_NAME="FILE_REALPATH"
 
     local file="${1}"
+    shift
+
+    local pwd="${1:-$PWD}"
 
     if [ "${file#/}" != "${file}" ]; then
         # Already absolute
@@ -476,7 +713,7 @@ FILE_REALPATH()
         :
     else
         # Prepend the current directory.
-        file="${PWD}/${file}"
+        file="${pwd}/${file}"
     fi
 
     # Remove dots and act on double dots.
@@ -529,6 +766,71 @@ FILE_REALPATH()
     file="${file:-/}"
 
     printf "%s\\n" "${file}"
+}
+
+STRING_REPEAT()
+{
+    local _SPACE_NAME="STRING_REPEAT"
+
+    local __string="${1}"
+    shift
+
+    local __count="${1}"
+    shift
+
+    local __separator="${1}"
+    shift
+
+    local __outvar="${1}"
+    shift
+
+    local __repeatedstring=""
+    while [ "${__count}" -gt 0 ]; do
+        __count=$((__count-1))
+        __repeatedstring="${__repeatedstring}${__string}"
+        if [ "${__count}" -gt 0 ]; then
+            __repeatedstring="${__repeatedstring}${__separator}"
+        fi
+    done
+
+    eval "${__outvar}=\"\${__repeatedstring}\""
+}
+
+_STRING_ESCAPE()
+{
+    local _SPACE_NAME="_STRING_ESCAPE"
+    local __right=
+    local __result=""
+    eval "__right=\$${1}"
+    local __left=
+    while true; do
+        # Cut from right up until last occurrence of char.
+        __left="${__right%%${2}*}"
+        if [ "${__left}" = "${__right}" ]; then
+            # Done
+            __result="${__result}${__left}"
+            break
+        fi
+        __right="${__right#$__left}"
+        # This seems to be necessary the remove the escapes properly.
+        __right="${__right#*${2}}"
+        # Now cut away from right all escapes, one by one..
+        local __escapes=""
+        local __left2=
+        while true; do
+            __left2="${__left%[\\]}"
+            if [ "${__left2}" = "${__left}" ]; then
+                # No more escapes
+                break
+            fi
+            # Escape encountered
+            __escapes="${__escapes}\\"
+            __left="${__left2}"
+        done
+        # Double the number of escapes and add one.
+        __result="${__result}${__left}${__escapes}${__escapes}\\${2}"
+    done
+    eval "${1}=\${__result}"
 }
 
 YAML_PARSE()
@@ -1224,6 +1526,7 @@ _COMPILE_PODMAN()
             volumes_config_encrypted="${volumes_config_encrypted} ${encrypted:-false}"
         elif [ "${type}" = "host" ]; then
             volumes_host="${volumes_host} ${volume}"
+            bind="$(FILE_REALPATH "${bind}" "${srcDir}")"
             volumes_host_bind="${volumes_host_bind} ${bind}"
         fi
 
@@ -1852,20 +2155,6 @@ _COMPILE_RESTART()
         PRINT "Restart policy '${value}' for container ${container_name} is invalid. Must be always, on-interval:x, on-config, on-failure or never." "error" 0
         return 1
     fi
-}
-
-STRING_ESCAPE()
-{
-    local _SPACE_NAME="STRING_ESCAPE"
-
-    local ___char=
-    for ___char in \" \$ \( \) \< \> \| \& \/; do
-        case "${2-\"\$}" in
-            *${___char}*)
-                _STRING_ESCAPE "${1}" "${___char}"
-                ;;
-        esac
-    done
 }
 
 STRING_ITEM_COUNT()
@@ -2607,121 +2896,9 @@ _module_find_yaml()
     done
 }
 
-STRING_SUBSTR()
-{
-    local _SPACE_NAME="STRING_SUBSTR"
-
-    # shellcheck disable=SC2034
-    local __sopriv="${1}"
-    shift
-
-    local __index="${1}"
-    shift
-
-    local __length="${1}"
-    shift
-
-    local __outvar="${1}"
-    shift
-
-    local __strlength="${#__sopriv}"
-
-    if [ "${__index}" -lt 0 ]; then
-        __index=$((__strlength+__index))
-    fi
-
-    if [ "${__index}" -ge 0 ]; then
-        if [ "${__length}" = "" ]; then
-            __length=$((__strlength-__index))
-        fi
-
-        if [ "${__length}" -lt 0 ]; then
-            __length=$((__strlength-__index+__length))
-        fi
-
-        if [ "$((__index+__length))" -le "${#__sopriv}" ]; then
-            local __wildcard=
-            STRING_REPEAT "?" "${__index}" "" "__wildcard"
-            local __substr="${__sopriv#${__wildcard}}"
-            STRING_REPEAT "?" "$((${#__substr}-__length))" "" "__wildcard"
-            __substr="${__substr%${__wildcard}}"
-            eval "${__outvar}=\"\${__substr}\""
-            return 0
-        fi
-
-    fi
-
-    eval "${__outvar}=\"\""
-}
-
-_STRING_ESCAPE()
-{
-    local _SPACE_NAME="_STRING_ESCAPE"
-    local __right=
-    local __result=""
-    eval "__right=\$${1}"
-    local __left=
-    while true; do
-        # Cut from right up until last occurrence of char.
-        __left="${__right%%${2}*}"
-        if [ "${__left}" = "${__right}" ]; then
-            # Done
-            __result="${__result}${__left}"
-            break
-        fi
-        __right="${__right#$__left}"
-        # This seems to be necessary the remove the escapes properly.
-        __right="${__right#*${2}}"
-        # Now cut away from right all escapes, one by one..
-        local __escapes=""
-        local __left2=
-        while true; do
-            __left2="${__left%[\\]}"
-            if [ "${__left2}" = "${__left}" ]; then
-                # No more escapes
-                break
-            fi
-            # Escape encountered
-            __escapes="${__escapes}\\"
-            __left="${__left2}"
-        done
-        # Double the number of escapes and add one.
-        __result="${__result}${__left}${__escapes}${__escapes}\\${2}"
-    done
-    eval "${1}=\${__result}"
-}
-
-STRING_REPEAT()
-{
-    local _SPACE_NAME="STRING_REPEAT"
-
-    local __string="${1}"
-    shift
-
-    local __count="${1}"
-    shift
-
-    local __separator="${1}"
-    shift
-
-    local __outvar="${1}"
-    shift
-
-    local __repeatedstring=""
-    while [ "${__count}" -gt 0 ]; do
-        __count=$((__count-1))
-        __repeatedstring="${__repeatedstring}${__string}"
-        if [ "${__count}" -gt 0 ]; then
-            __repeatedstring="${__repeatedstring}${__separator}"
-        fi
-    done
-
-    eval "${__outvar}=\"\${__repeatedstring}\""
-}
-
 main()
 {
-    COMPILE_ENTRY "$@"
+    PODC_CMDLINE "$@"
 
     # Space will print exit status.
     local _status=$?

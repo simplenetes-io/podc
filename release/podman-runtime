@@ -1521,8 +1521,8 @@ STRING_SUBSTR()
     local __length="${1}"
     shift
 
-    local __outvar="${1}"
-    shift
+    local __outvar="${1:-}"
+    shift $(( $# > 0 ? 1 : 0 ))
 
     local __strlength="${#__sopriv}"
 
@@ -1545,13 +1545,19 @@ STRING_SUBSTR()
             local __substr="${__sopriv#${__wildcard}}"
             STRING_REPEAT "?" "$((${#__substr}-__length))" "" "__wildcard"
             __substr="${__substr%${__wildcard}}"
-            eval "${__outvar}=\"\${__substr}\""
+            if [ -n "${__outvar}" ]; then
+                eval "${__outvar}=\"\${__substr}\""
+            else
+                printf "%s\\n" "${__outvar}"
+            fi
             return 0
         fi
 
     fi
 
-    eval "${__outvar}=\"\""
+    if [ -n "${__outvar}" ]; then
+        eval "${__outvar}=\"\""
+    fi
 }
 
 STRING_INDEXOF()

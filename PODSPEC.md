@@ -80,7 +80,7 @@ volumes:
       size: 10M
 
     # Config volumes are host bind volumes, mounting the corresponding directory in ./config
-    # This is good to use for configurations, but not secrets.
+    # This is good to use for configurations, but not for secrets.
     # When the files have changed on disk, the containers(s)
     # mounting this volume can be signalled by `pod reload-configs config1 config2 etc`. This will signal each container
     # that have signal defined and is currently Up.
@@ -108,6 +108,9 @@ volumes:
       type: volume
 
     # Mount directory/device on host
+    # If the bind given is relative then it will be made absolute relative for the current working directory ($PWD),
+    # using relative bind paths are useful for dev mode workflows when mounting local build directories.
+    # The basedir can be overridden by compiling with the -d option.
     - name: extradisk
       type: host
       bind: /dev/sda1

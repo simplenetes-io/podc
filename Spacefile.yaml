@@ -14,7 +14,7 @@ compile:
         - outFile:
             title: The output file (this also gives the target directory)
         - srcDir:
-            title: Source directory of the pod.yaml file.
+            title: Override the source directory of the pod.yaml file.
             desc: |
                 If the inFile is not located where the original pod.yaml file is (which could happen on an outside preprocessing event)
                 then we need to provide the source dir if compiling an executable runtime, since it looks for "./bin".
@@ -26,4 +26,4 @@ cmdline:
     _info:
         title: Use podc as a standalone cmd line tool
     _env:
-        - RUN: COMPILE_ENTRY -- "\$@"
+        - RUN: PODC_CMDLINE -- "\$@"

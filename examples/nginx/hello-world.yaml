@@ -7,6 +7,7 @@ volumes:
       type: config
 containers:
     - name: webserver
+      # TODO: change to nginx:1.16.1-alpine
       image: kitematic/hello-world-nginx
       restart: on-failure
       startupProbe:
@@ -28,7 +29,7 @@ containers:
               - -c
               - "wget -O /dev/null http://127.0.0.1"
       signal:
-          - kill: HUP
+          - sig: HUP
       mounts:
           - dest: /website_files
             volume: nginx_files

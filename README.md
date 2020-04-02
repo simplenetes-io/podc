@@ -32,7 +32,7 @@ The `podman-runtime` file needs to either be relative to the `podc` file in `./`
 
 ## Try it out
 ```sh
-./release/podc hello-world ./examples/nginx/hello-world.yaml
+./release/podc helloworld -f ./examples/nginx/hello-world.yaml
 
 ./examples/nginx/hello-world run
 curl 127.0.0.1:8080

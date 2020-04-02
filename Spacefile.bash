@@ -1,13 +1,159 @@
-_USAGE()
+PODC_CMDLINE()
+{
+    SPACE_SIGNATURE="[action args]"
+    SPACE_DEP="USAGE _GETOPTS COMPILE_ENTRY VERSION"
+
+    local _out_rest=""
+    local _out_h="false"
+    local _out_V="false"
+    local _out_p="true"
+
+    local _out_f=""
+    local _out_o=""
+    local _out_d=""
+
+    if ! _GETOPTS "h V" "f o d p" 0 1 "$@"; then
+        printf "Usage: pod [podname] [-f infile] [-o outfile] [-d srcdir] [-p true|false]\\n" >&2
+        return 1
+    fi
+
+    if [ "${_out_h}" = "true" ]; then
+        USAGE
+        return
+    fi
+
+    if [ "${_out_V}" = "true" ]; then
+        VERSION
+        return
+    fi
+
+    COMPILE_ENTRY "${_out_rest}" "${_out_f}" "${_out_o}" "${_out_d}" "${_out_p}"
+}
+
+VERSION()
+{
+    printf "%s\\n" "Simplenetes pod compiler version 0.1. apiVersion: 1.0.0-beta1"
+}
+
+_GETOPTS()
+{
+    SPACE_SIGNATURE="simpleSwitches richSwitches minPositional maxPositional [args]"
+    SPACE_DEP="PRINT STRING_SUBSTR STRING_INDEXOF STRING_ESCAPE"
+
+    local simpleSwitches="${1}"
+    shift
+
+    local richSwitches="${1}"
+    shift
+
+    local minPositional="${1:-0}"
+    shift
+
+    local maxPositional="${1:-0}"
+    shift
+
+    _out_rest=""
+
+    local options=""
+    local option=
+    for option in ${richSwitches}; do
+        options="${options}${option}:"
+    done
+
+    local posCount="0"
+    while [ "$#" -gt 0 ]; do
+        local flag="${1#-}"
+        if [ "${flag}" = "${1}" ]; then
+            # Non switch
+            posCount="$((posCount+1))"
+            if [ "${posCount}" -gt "${maxPositional}" ]; then
+                PRINT "Too many positional argumets, max ${maxPositional}" "error" 0
+                return 1
+            fi
+            _out_rest="${_out_rest}${_out_rest:+ }${1}"
+            shift
+            continue
+        fi
+        local flag2=
+        STRING_SUBSTR "${flag}" 0 1 "flag2"
+        if STRING_ITEM_INDEXOF "${simpleSwitches}" "${flag2}"; then
+            if [ "${#flag}" -gt 1 ]; then
+                PRINT "Invalid option: -${flag}" "error" 0
+                return 1
+            fi
+            eval "_out_${flag}=\"true\""
+            shift
+            continue
+        fi
+
+        local OPTIND=1
+        getopts ":${options}" "flag"
+        case "${flag}" in
+            \?)
+                PRINT "Unknown option ${1-}" "error" 0
+                return 1
+                ;;
+            :)
+                PRINT "Option -${OPTARG-} requires an argument" "error" 0
+                return 1
+                ;;
+            *)
+                STRING_ESCAPE "OPTARG"
+                eval "_out_${flag}=\"${OPTARG}\""
+                ;;
+        esac
+        shift $((OPTIND-1))
+    done
+
+    if [ "${posCount}" -lt "${minPositional}" ]; then
+        PRINT "Too few positional argumets, min ${minPositional}" "error" 0
+        return 1
+    fi
+}
+
+USAGE()
 {
     printf "%s\\n" "Usage:
-    podc podName inFile [buildDir doPreprocessing true|false]" >&2
+
+    podc -h
+        Output this help
+
+    podc -V
+        Output version
+
+    podc [podname] [-f infile] [-o outfile] [-d srcdir] [-p]
+
+        podname
+            is the name of the pod, default is to take the directory name,
+            but which might not be a valid name. Only a-z0-9 and underscore allowed.
+            Must start with a letter.
+
+        -f infile
+            optional path to the pod.yaml file.
+            Default is to look for pod.yaml in the current directory.
+
+        -o outfile
+            optional path where to write the executable pod file.
+            Default is \"pod\" in the same directory as the pod yaml file.
+
+        -p true|false (default false)
+            optional flag do perform preprocessing on the pod.yaml file or not.
+
+        -d srcdir
+            Optional directory path to use as source directory if \"infile\"
+            is in another directory.
+            This feature is used by other tools who do preprocessing
+            on the original pod.yaml file and place a temporary file elsewhere.
+            It can also be used to override the home directory of host volumes with relative mount points,
+            then the srcdir is the basedir, otherwise it is the dir of infile.
+
+" >&2
 }
 
 COMPILE_ENTRY()
 {
     SPACE_SIGNATURE="[podName inFile outFile srcDir doPreprocessing]"
-    SPACE_DEP="_COMPILE_POD PRINT TEXT_EXTRACT_VARIABLES TEXT_VARIABLE_SUBST TEXT_FILTER TEXT_GET_ENV _USAGE FILE_REALPATH"
+    SPACE_DEP="_COMPILE_POD PRINT TEXT_EXTRACT_VARIABLES TEXT_VARIABLE_SUBST TEXT_FILTER TEXT_GET_ENV FILE_REALPATH"
 
     local podName="${1:-}"
     shift $(($# > 0 ? 1 : 0))
@@ -30,11 +176,6 @@ COMPILE_ENTRY()
         PRINT "No pod name given as first argument, assuming: ${podName}" "info" 0
     fi
 
-    if [ "${podName}" = "-h" ] || [ "${podName}" = "--help" ]; then
-        _USAGE
-        return 1
-    fi
-
     if [ -z "${inFile}" ]; then
         inFile="pod.yaml"
         PRINT "No in file given as second argument, assuming: ${inFile}" "info" 0
@@ -44,7 +185,6 @@ COMPILE_ENTRY()
 
     if [ ! -f "${inFile}" ]; then
         PRINT "Yaml file does not exist." "error" 0
-        _USAGE
         return 1
     fi
 
@@ -388,6 +528,7 @@ _COMPILE_PODMAN()
             volumes_config_encrypted="${volumes_config_encrypted} ${encrypted:-false}"
         elif [ "${type}" = "host" ]; then
             volumes_host="${volumes_host} ${volume}"
+            bind="$(FILE_REALPATH "${bind}" "${srcDir}")"
             volumes_host_bind="${volumes_host_bind} ${bind}"
         fi
 
