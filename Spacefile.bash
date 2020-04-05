@@ -260,6 +260,11 @@ _COMPILE_POD()
     local outFile="${1}"
     shift
 
+    if [ -d "${outFile}" ]; then
+        PRINT "${outFile} is a directory" "error" 0
+        return 1
+    fi
+
     local srcDir="${1}"
     shift $(($# > 0 ? 1 : 0))
 
@@ -1419,7 +1424,14 @@ _COMPILE_INGRESS()
                 httpSpecific=1
             else
                 # server backend.
-                # This requires
+                # This requires that any http psecific criteria has been set, of http/s
+                if [ "${httpSpecific}" = "0" ] && { [ "${protocol}" = "http" ] || [ "${protocol}" = "https" ]; }; then
+                    PRINT "Missing http/s specific criterion. Ex: path, pathBeg, pathEnd, etc" "error" 0
+                    return 1
+                fi
+
+
+                # This requires a hostPort
                 if [ -z "${hostPort}" ]; then
                     PRINT "This pod yaml ingress is lacking a hostPort definition." "error" 0
                     return 1

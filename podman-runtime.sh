@@ -306,7 +306,11 @@ _CHECK_HOST_MOUNTS()
             local left="${mount%%:*}"
             # Check if it is a directory
             if [ "${left#*/}" != "${left}" ]; then
-                if [ ! -d "${left}" ]; then
+                # Check if ramdisk
+                if [ "${left#./ramdisk/}" != "${left}" ]; then
+                    # Fake ramdisk will be created
+                    continue
+                elif [ ! -d "${left}" ]; then
                     PRINT "Directory to be mounted '${left}' does not exist" "error" 0
                     return 1
                 fi
@@ -556,7 +560,7 @@ _RUN_CONTAINER()
         else
             printf "%s [SNT] %s ended, with state %s\\n" "${ts}" "${container}" "${containerstatus}" >>"${stderrLog}"
         fi
-    ) &
+    ) >/dev/null 2>/dev/null &
     pid="$!"
     PRINT "Subshell PID is ${pid} for container ${container}" "debug" 0
 
