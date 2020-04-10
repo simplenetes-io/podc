@@ -144,16 +144,16 @@ containers:
 
       # Restart policy for when a container exits:
       # always (no matter exit code restart container)
-      # on-interval:x (no matter the exit code, container will be rerun after x seconds after exit, will not be restarted on config changes)
-      # on-config (restart when config files on disk are changed or when container exited with error code (as on-failure))
-      # on-failure (restart container when exit -ne 0, do not restart on config updates)
-      # never (no matter exit status or if configs are updated container will not restart)
+      # on-config (restart when config files on disk are changed or when container exited with error code)
+      # on-interval:x (as on-config, but also restart on successful exists after x seconds have passed)
+      # on-failure (restart container when exit -ne 0)
+      # never (never restart container)
       restart: on-interval:10
 
       # Define how this container is signalled, optional.
       # A container can get get 1) signalled by other containers 2) signalled by the daemon on configuration changes or 3) from cmd line.
-      # 1) A container which defines `wait/signal` and a list of `- name: container` will when ready signal all those
-      #    containers which is defined, if those containers have a `signal` defined.
+      # 1) A container which defines `startupProbe/signal` and a list of `- name: container` will when ready signal all those
+      #    containers which are defined, if those containers have a `signal` defined.
       # 2) If a container mounts a config and a `reload-configs` command is issued for that specific config,
       #    the container will then be signalled according to it's signal.
       # 3) By calling the pod executable `./pod signal [container1 container2 etc]`
@@ -190,7 +190,8 @@ containers:
       # Startup probe of the container.
       # The pod startup process will not continue until a container is started up.
       # Note that a successful startup could mean that the container started and then exited with code 0.
-      # If a container fails to startup properly in the pod creation phase then the pod will be destroyed.
+      # If a container fails to startup properly in the pod creation phase then the pod will be destroyed, this also includes if there is a startup probe which fails.
+      # If there is no startup probe then the startup is counted as suceesful as soon as the container has been started.
       # If a container fails to startup later it will be destroyed and restarted according to its restart policy.
       startupProbe:
           # Wait max 60 seconds for the container to be ready. Default is 120.
@@ -215,8 +216,8 @@ containers:
 
           # Define under `signal` which other containers shall we signal that we have started successfully.
           # Only containers which are Up will get signalled. When Pod is starting up fresh then only containers defined above this container can possibly be Up and therefore get signalled.
-          # However, if the container is restarted then all containers defined under `signal` will get signalled, regardless the definition order.
-          # Containers to be signalled must also define the `signal` property, otherwise the signalling is ignored.
+          # However, if the container is restarted then all containers defined under `signal` will get signalled (regardless the definition order) if the startup was successful and target containers are Up.
+          # Containers to be signalled must of course have defined the `signal` property, otherwise the signalling is ignored.
           signal:
               - container: hello
               - container: secret
@@ -232,7 +233,7 @@ containers:
         cmd:
             - sh
             - c
-            - 'code=$(curl -Lqso /dev/null http://127.0.0.1:8080/healthz -H "Host: example.org" -w "%{http_code}") && [ "${code}" -ge 200 ] && [ "${code}" -lt 400 ]'
+            - 'code=$(curl -Lso /dev/null http://127.0.0.1:8080/healthz -H "Host: example.org" -w "%{http_code}") && [ "${code}" -ge 200 ] && [ "${code}" -lt 400 ]'
 
       # Check to determine the health of the container.
       # This check is valid to run during the whole pod lifecycle, but only after the startupProbe (if any) is finished.

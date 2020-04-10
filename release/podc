@@ -1115,7 +1115,7 @@ _COMPILE_INGRESS()
                 fi
 
                 if [ "${clusterPort}" -ge "30000" ] && [ "${clusterPort}" -le "32767" ]; then
-                    PRINT "Cluster port cannt be in the reserved range of 30000-32767." "error" 0
+                    PRINT "Cluster port cannot be in the reserved range of 30000-32767." "error" 0
                     return 1
                 fi
             else

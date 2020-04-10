@@ -367,15 +367,15 @@ _RELOAD_CONFIG()
                     # If the container is running then signal it, if it has a signal system setup
                     _SIGNAL_CONTAINER "${container}" "${container_nr}"
                 else
-                    # If container is not running, cycle it as long as its restart policy is not "never" or "on-failure".
+                    # If container is not running, cycle it as long as its restart policy allows
                     local restartpolicy=
                     _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restartpolicy"
-                    # Restart on always and on-config
-                    # Do not restart on never, on-failure nor on on-interval:x
-                    if [ "${restartpolicy}" = "always" ] || [ "${restartpolicy}" = "on-config" ]; then
+                    # Restart on always, on-config and on-interval:x
+                    # Do not restart on never or on-failure
+                    if [ "${restartpolicy}" = "always" ] || [ "${restartpolicy}" = "on-config" ] || [ "${restartpolicy%:*}" = "on-interval" ]; then
                         _CYCLE_CONTAINER "${container}" "${container_nr}"
                     else
-                        PRINT "Container ${container} is not restarted due to its restart policy being \"never\"" "info" 0
+                        PRINT "Container ${container} is not restarted due to its restart policy" "info" 0
                     fi
                 fi
             fi
@@ -1100,11 +1100,13 @@ _START_CONTAINERS()
                 # Container is not running anymore, check what our restart policy says.
                 local restartpolicy=
                 _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restartpolicy"
+                # Get exit status of container
+                local exitcode="$(_CONTAINER_EXITCODE "${container}")"
                 local restart="no"
                 if [ "${restartpolicy}" = "always" ]; then
                     restart="yes"
                     PRINT "Container ${container} is being cycled" "info" 0
-                elif [ "${restartpolicy%:*}" = "on-interval" ]; then
+                elif [ "${exitcode}" = "0" ] && [ "${restartpolicy%:*}" = "on-interval" ]; then
                     local interval="${restartpolicy#*:}"
                     local ts="$(_CONTAINER_FINISHEDAT "${container}")"
                     local now="$(date +%s)"
@@ -1112,10 +1114,8 @@ _START_CONTAINERS()
                         restart="yes"
                         PRINT "Container ${container} restarting now on its interval of ${interval} seconds" "info" 0
                     fi
-                elif [ "${restartpolicy}" = "on-failure" ] || [ "${restartpolicy}" = "on-config" ]; then
-                    # Need to get exit status of container
-                    local exitcode="$(_CONTAINER_EXITCODE "${container}")"
-                    if [ "${exitcode}" -gt 0 ]; then
+                elif [ "${restartpolicy}" = "on-failure" ] || [ "${restartpolicy}" = "on-config" ] || [ "${restartpolicy%:*}" = "on-interval" ]; then
+                    if [ "${exitcode}" != "0" ]; then
                         PRINT "Container ${container} exit code: ${exitcode}, cycle it" "info" 0
                         restart="yes"
                     else
@@ -1754,7 +1754,7 @@ _RUN_CONTAINER()
             if [ "${startupProbe}" = "exit" ]; then
                 if [ "${containerstatus}" != "running" ]; then
                     local exitcode="$(_CONTAINER_EXITCODE "${container}")"
-                    if [ "${exitcode}" -eq 0 ]; then
+                    if [ "${exitcode}" = "0" ]; then
                         break
                     else
                         # Wrong exit code
@@ -1817,7 +1817,10 @@ _CONTAINER_EXITCODE()
     local container="${1}"
     shift
 
-    local code="$(podman inspect ${container} --format "{{.State.ExitCode}}")"
+    local code
+    if ! code="$(podman inspect ${container} --format "{{.State.ExitCode}}" 2>/dev/null)"; then
+        return 1
+    fi
     printf "%d\\n" "${code}"
 }
 
@@ -1990,7 +1993,7 @@ _LOG_FILE()
 
     local index="0"
     local line=
-    while read -r line; do
+    while IFS='' read -r line; do
         # Check if regular file and if size if overdue
         if [ "${maxFileSize}" -gt 0 ] && [ -f "${file}" ]; then
             local size="$(FILE_STAT "${file}" "%s")"
