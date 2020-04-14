@@ -58,6 +58,21 @@ There are a couple of different types of Pods supported so far in Simplenetes.
     - Process Pods
         These are single executables which conform to the Pod API
 
+Very important to note is the the `podc` yaml interpretor has a few restrictions compared to other yaml
+processors (because it is implemented in Bash). The most notable is that lists *must be intended*.
+This will NOT work:  
+```yaml
+parent:
+- item1
+- item2
+```
+This will work:  
+```yaml
+parent:
+ - item1
+ - item2
+```
+
 ### Container Pod Spec (using podman)
 
 ```yaml

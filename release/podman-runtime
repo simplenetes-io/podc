@@ -83,7 +83,7 @@ POD_ENTRY()
         elif [ "${action}" = "run" ]; then
             _RUN
         elif [ "${action}" = "rerun" ]; then
-            _RERUN
+            _RERUN "$@"
         elif [ "${action}" = "signal" ]; then
             _SIGNAL "$@"
         elif [ "${action}" = "logs" ]; then
@@ -102,10 +102,12 @@ POD_ENTRY()
         elif [ "${action}" = "create-volumes" ]; then
             _CREATE_VOLUMES
         elif [ "${action}" = "reload-configs" ]; then
+            local _out_rest=
             if ! _GETOPTS "" "" 1 999 "$@"; then
-                printf "Usage: pod reload-configs container1 [container2...]\\n" >&2
+                printf "Usage: pod reload-configs config1 [config2...]\\n" >&2
                 return 1
             fi
+            set -- ${_out_rest}
             _RELOAD_CONFIG "$@"
         elif [ "${action}" = "rm" ]; then
             _RM
@@ -130,7 +132,7 @@ POD_ENTRY()
     fi
 
     local status=$?
-    cd "${start_dir}"
+    cd "${start_dir}" 2>/dev/null
     return "${status}"
 }
 
@@ -183,9 +185,10 @@ _SHOW_USAGE()
         Remove the pod and all containers, but leave volumes intact.
         If the pod and containers are running they will be stopped first and then removed.
 
-    rerun
+    rerun [container1 container2 etc]
         Remove the pod and all containers then recreate and start them.
         Same effect as issuing rm and run in sequence.
+        If container name(s) are provided then only cycle the containers, not the full pod.
 
     signal [container1 container2 etc]
         Send a signal to one, many or all containers.
@@ -210,7 +213,7 @@ _SHOW_USAGE()
         to first create the volumes and possibly populate them with data, before running the pod.
 
     reload-configs config1 [config2 config3 etc]
-        When a "config" has been updated on disk, this command should be invoked to signal the container
+        When a \"config\" has been updated on disk, this command should be invoked to signal the container
         who mount the specific config(s).
         Each container mounting the config will be signalled as defined in the YAML specification.
 
@@ -329,9 +332,6 @@ _RELOAD_CONFIG()
 {
     local _SPACE_NAME="_RELOAD_CONFIG"
 
-    local configs="$*"
-    shift
-
     if ! _POD_EXISTS; then
         PRINT "Pod ${POD} does not exist" "error" 0
         return 1
@@ -343,7 +343,7 @@ _RELOAD_CONFIG()
         return 1
     fi
 
-    PRINT "Cycle/signal containers who mount the configs ${configs}" "info" 0
+    PRINT "Cycle/signal containers who mount the configs $*" "info" 0
 
     local config=
     local containersdone=""
@@ -399,12 +399,36 @@ _RERUN()
 {
     local _SPACE_NAME="_RERUN"
 
-    if _POD_EXISTS; then
-        _STOP_POD
-        _DESTROY_POD
-    fi
+    if [ "$#" -gt 0 ]; then
+        if ! _POD_EXISTS; then
+            PRINT "Pod does not exist" "error" 0
+            return 1
+        fi
 
-    _RUN
+        local containerNames=""
+        local container=
+        local container_nr=
+        for container in "$@"; do
+            container="${container}-${POD}"
+            local container2=
+            for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
+                if [ "${container}" = "${container2}" ]; then
+                    PRINT "Cycle container ${container}" "info" 0
+                    _CYCLE_CONTAINER "${container}" "${container_nr}"
+                    continue 2
+                fi
+            done
+            PRINT "Container ${container} does not exist in this pod" "error" 0
+        done
+    else
+        # Rerun the whole pod
+        if _POD_EXISTS; then
+            _STOP_POD
+            _DESTROY_POD
+        fi
+        _RUN
+    fi
 }
 
 _SIGNAL()
@@ -412,7 +436,7 @@ _SIGNAL()
     local _SPACE_NAME="_SIGNAL"
 
     local container=
-    local containerNames=
+    local containerNames=""
 
     if [ "$#" -gt 0 ]; then
         # Iterate over each name and append the POD name
@@ -534,7 +558,7 @@ _LOGS()
         local container="${file%%-${POD}*}"
         local stream="${file%%.log*}"
         stream="${stream##*-}"
-        awk '{if ($1 >= '"${timestamp}"') {print "'${container}' '${stream}' " $0}}' ${file}
+        awk '{if ($1 >= '"${timestamp}"') {print "'"${container}"' '"${stream}"' " $0}}' "${file}"
     done |sort -k3,3n -k4,4n |
         {
             if [ "${limit}" = 0 ]; then
@@ -919,9 +943,9 @@ _SHELL()
     fi
 
     if [ "${useBash}" = "true" ]; then
-        podman exec -ti ${containerName} bash
+        podman exec -ti "${containerName}" bash
     else
-        podman exec -ti ${containerName} sh
+        podman exec -ti "${containerName}" sh
     fi
 }
 
@@ -971,6 +995,7 @@ _CREATE_POD()
     local _SPACE_NAME="_CREATE_POD"
 
     local id=
+    # shellcheck disable=2086
     if id=$(podman pod create ${POD_CREATE}); then
         PRINT "Pod ${POD} created with id: ${id}" "ok" 0
     else
@@ -1294,7 +1319,7 @@ _SIGNAL_CONTAINER()
         fi
     elif [ -n "${cmd}" ]; then
         PRINT "Container ${container} executing: ${cmd}" "info" 0
-        if ! eval "podman exec ${container} ${cmd} >/dev/null 2>&1"; then
+        if ! eval "podman exec "${container}" ${cmd} >/dev/null 2>&1"; then
             PRINT "Container ${container} could not execute command" "error" 0
             return 1
         fi
@@ -1475,7 +1500,7 @@ _RUN_PROBE()
 
     PRINT "podman exec ${container} ${command}" "debug" 0
 
-    eval "podman exec ${container} ${command} >/dev/null 2>&1"&
+    eval "podman exec "${container}" ${command} >/dev/null 2>&1"&
     local pid="$!"
     while true; do
         if ! kill -0 "${pid}" 2>/dev/null; then
@@ -1818,7 +1843,7 @@ _CONTAINER_EXITCODE()
     shift
 
     local code
-    if ! code="$(podman inspect ${container} --format "{{.State.ExitCode}}" 2>/dev/null)"; then
+    if ! code="$(podman inspect "${container}" --format "{{.State.ExitCode}}" 2>/dev/null)"; then
         return 1
     fi
     printf "%d\\n" "${code}"
@@ -1831,7 +1856,7 @@ _CONTAINER_FINISHEDAT()
     local container="${1}"
     shift
 
-    local at="$(podman inspect ${container} --format "{{.State.FinishedAt}}")"
+    local at="$(podman inspect "${container}" --format "{{.State.FinishedAt}}")"
     # The format returned is as: 2020-03-04 22:58:50.380309603 +0100 CET
     # Make it into a format which both GNU date and BSD date utlities can work with.
     # Cut away ".micros +0100 TZ"
@@ -1950,6 +1975,7 @@ NETWORK_LOCAL_IP()
     local _SPACE_NAME="NETWORK_LOCAL_IP"
     local interface="${1:-}"
 
+    # shellcheck disable=2086
     ifconfig ${interface:-} |grep -o "inet .*" |cut -d' ' -f 2 |grep ".*[.].*[.].*[.]1$" -v |sort |tail -n1
 }
 

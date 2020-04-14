@@ -117,7 +117,7 @@ _KILL_POD()
 
     PRINT "Pod ${POD} killing..." "info" 0
     local id=
-    if id=$(podman pod kill ${POD} 2>&1); then
+    if id=$(podman pod kill "${POD}" 2>&1); then
         PRINT "Pod ${POD} killed: ${id}" "ok" 0
     else
         PRINT "Pod ${POD} could not be killed: ${id}" "error" 0
@@ -162,7 +162,7 @@ _STOP_POD()
 
     PRINT "Pod ${POD} stopping..." "info" 0
     local id=
-    if id=$(podman pod stop ${POD} 2>&1); then
+    if id=$(podman pod stop "${POD}" 2>&1); then
         PRINT "Pod ${POD} stopped: ${id}" "ok" 0
     else
         PRINT "Pod ${POD} could not be stopped: ${id}" "error" 0
@@ -242,6 +242,7 @@ _CREATE_POD()
     #SPACE_ENV="POD_CREATE"
 
     local id=
+    # shellcheck disable=2086
     if id=$(podman pod create ${POD_CREATE}); then
         PRINT "Pod ${POD} created with id: ${id}" "ok" 0
     else
@@ -257,7 +258,7 @@ _START_POD()
     #SPACE_ENV="POD"
 
     local id=
-    if id=$(podman pod start ${POD}); then
+    if id=$(podman pod start "${POD}"); then
         PRINT "Pod ${POD} started: ${id}" "ok" 0
     else
         PRINT "Pod ${POD} could not be started" "error" 0
@@ -433,7 +434,7 @@ _CONTAINER_FINISHEDAT()
     local container="${1}"
     shift
 
-    local at="$(podman inspect ${container} --format "{{.State.FinishedAt}}")"
+    local at="$(podman inspect "${container}" --format "{{.State.FinishedAt}}")"
     # The format returned is as: 2020-03-04 22:58:50.380309603 +0100 CET
     # Make it into a format which both GNU date and BSD date utlities can work with.
     # Cut away ".micros +0100 TZ"
@@ -461,7 +462,7 @@ _CONTAINER_EXITCODE()
     shift
 
     local code
-    if ! code="$(podman inspect ${container} --format "{{.State.ExitCode}}" 2>/dev/null)"; then
+    if ! code="$(podman inspect "${container}" --format "{{.State.ExitCode}}" 2>/dev/null)"; then
         return 1
     fi
     printf "%d\\n" "${code}"
@@ -817,9 +818,10 @@ _SHOW_USAGE()
         Remove the pod and all containers, but leave volumes intact.
         If the pod and containers are running they will be stopped first and then removed.
 
-    rerun
+    rerun [container1 container2 etc]
         Remove the pod and all containers then recreate and start them.
         Same effect as issuing rm and run in sequence.
+        If container name(s) are provided then only cycle the containers, not the full pod.
 
     signal [container1 container2 etc]
         Send a signal to one, many or all containers.
@@ -844,7 +846,7 @@ _SHOW_USAGE()
         to first create the volumes and possibly populate them with data, before running the pod.
 
     reload-configs config1 [config2 config3 etc]
-        When a "config" has been updated on disk, this command should be invoked to signal the container
+        When a \"config\" has been updated on disk, this command should be invoked to signal the container
         who mount the specific config(s).
         Each container mounting the config will be signalled as defined in the YAML specification.
 
@@ -1188,7 +1190,7 @@ _LOGS()
         local container="${file%%-${POD}*}"
         local stream="${file%%.log*}"
         stream="${stream##*-}"
-        awk '{if ($1 >= '"${timestamp}"') {print "'${container}' '${stream}' " $0}}' ${file}
+        awk '{if ($1 >= '"${timestamp}"') {print "'"${container}"' '"${stream}"' " $0}}' "${file}"
     done |sort -k3,3n -k4,4n |
         {
             if [ "${limit}" = 0 ]; then
@@ -1228,7 +1230,7 @@ _SIGNAL()
     SPACE_DEP="_CONTAINER_EXISTS _GET_CONTAINER_VAR _SIGNAL_CONTAINER _CONTAINER_STATUS PRINT"
 
     local container=
-    local containerNames=
+    local containerNames=""
 
     if [ "$#" -gt 0 ]; then
         # Iterate over each name and append the POD name
@@ -1270,14 +1272,39 @@ _SIGNAL()
 # Create pod and all containers and start it all up.
 _RERUN()
 {
-    SPACE_DEP="_STOP_POD _DESTROY_POD _RUN _POD_EXISTS"
+    SPACE_SIGNATURE="[containers]"
+    SPACE_DEP="PRINT _GET_CONTAINER_VAR _CYCLE_CONTAINER _STOP_POD _DESTROY_POD _RUN _POD_EXISTS"
 
-    if _POD_EXISTS; then
-        _STOP_POD
-        _DESTROY_POD
+    if [ "$#" -gt 0 ]; then
+        if ! _POD_EXISTS; then
+            PRINT "Pod does not exist" "error" 0
+            return 1
+        fi
+
+        local containerNames=""
+        local container=
+        local container_nr=
+        for container in "$@"; do
+            container="${container}-${POD}"
+            local container2=
+            for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
+                if [ "${container}" = "${container2}" ]; then
+                    PRINT "Cycle container ${container}" "info" 0
+                    _CYCLE_CONTAINER "${container}" "${container_nr}"
+                    continue 2
+                fi
+            done
+            PRINT "Container ${container} does not exist in this pod" "error" 0
+        done
+    else
+        # Rerun the whole pod
+        if _POD_EXISTS; then
+            _STOP_POD
+            _DESTROY_POD
+        fi
+        _RUN
     fi
-
-    _RUN
 }
 
 # Whenever a config on disk has changed
@@ -1286,9 +1313,6 @@ _RELOAD_CONFIG()
 {
     SPACE_SIGNATURE="configs"
     SPACE_DEP="_POD_EXISTS _POD_STATUS PRINT _GET_CONTAINER_VAR _CONTAINER_EXISTS _CONTAINER_EXISTS _CYCLE_CONTAINER _CONTAINER_STATUS STRING_ITEM_INDEXOF"
-
-    local configs="$*"
-    shift
 
     if ! _POD_EXISTS; then
         PRINT "Pod ${POD} does not exist" "error" 0
@@ -1301,7 +1325,7 @@ _RELOAD_CONFIG()
         return 1
     fi
 
-    PRINT "Cycle/signal containers who mount the configs ${configs}" "info" 0
+    PRINT "Cycle/signal containers who mount the configs $*" "info" 0
 
     local config=
     local containersdone=""
@@ -1380,9 +1404,9 @@ _SHELL()
     fi
 
     if [ "${useBash}" = "true" ]; then
-        podman exec -ti ${containerName} bash
+        podman exec -ti "${containerName}" bash
     else
-        podman exec -ti ${containerName} sh
+        podman exec -ti "${containerName}" sh
     fi
 }
 
@@ -1505,6 +1529,7 @@ _LIVENESS_PROBE()
 
 # Output the ramdisks configuration for this pod's containers.
 # This is used by the daemon to create ramdisks.
+# It is also used by this executable to create fake ramdisks unless the daemon provided them.
 _RAMDISK_CONFIG()
 {
     #SPACE_ENV="POD_RAMDISKS"
@@ -1705,7 +1730,7 @@ POD_ENTRY()
         elif [ "${action}" = "run" ]; then
             _RUN
         elif [ "${action}" = "rerun" ]; then
-            _RERUN
+            _RERUN "$@"
         elif [ "${action}" = "signal" ]; then
             _SIGNAL "$@"
         elif [ "${action}" = "logs" ]; then
@@ -1724,10 +1749,12 @@ POD_ENTRY()
         elif [ "${action}" = "create-volumes" ]; then
             _CREATE_VOLUMES
         elif [ "${action}" = "reload-configs" ]; then
+            local _out_rest=
             if ! _GETOPTS "" "" 1 999 "$@"; then
-                printf "Usage: pod reload-configs container1 [container2...]\\n" >&2
+                printf "Usage: pod reload-configs config1 [config2...]\\n" >&2
                 return 1
             fi
+            set -- ${_out_rest}
             _RELOAD_CONFIG "$@"
         elif [ "${action}" = "rm" ]; then
             _RM
@@ -1752,6 +1779,6 @@ POD_ENTRY()
     fi
 
     local status=$?
-    cd "${start_dir}"
+    cd "${start_dir}" 2>/dev/null
     return "${status}"
 }

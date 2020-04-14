@@ -185,6 +185,7 @@ COMPILE_ENTRY()
 
     if [ ! -f "${inFile}" ]; then
         PRINT "Yaml file does not exist." "error" 0
+        printf "Usage: pod [podname] [-f infile] [-o outfile] [-d srcdir] [-p true|false]\\n" >&2
         return 1
     fi
 
@@ -486,21 +487,20 @@ _COMPILE_PODMAN()
             return 1
         fi
 
+        if [[ ! $volume =~ ^[a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
+            PRINT "Volume name '${volume}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter" "error" 0
+            return 1
+        fi
+
         if [ "${type}" = "volume" ]; then
             # For all regular volumes we set the prefix
             volume="${volume}${volumesuffix}"
         fi
 
-        if [[ $volume =~ ^[a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
-            # Name is OK
-            # Check for duplicates
-            if STRING_ITEM_INDEXOF "${all_volumes}" "${volume}"; then
-                # Duplicate
-                PRINT "Volume name ${volume} is already defined." "error" 0
-                return 1
-            fi
-        else
-            PRINT "Volume name '${volume}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter" "error" 0
+        # Check for duplicates
+        if STRING_ITEM_INDEXOF "${all_volumes}" "${volume}"; then
+            # Duplicate
+            PRINT "Volume name ${volume} is already defined." "error" 0
             return 1
         fi
 
@@ -1165,6 +1165,7 @@ _COMPILE_ENV()
                 PRINT "Env variable name contains illegal characters: ${subarg}. a-zA-Z0-9_, ha sto start with a letter." "error" 0
                 return 1
             fi
+            local subarg2=
             _copy "subarg2" "/containers/${index}/env/${arg}/value"
             _QUOTE_ARG "subarg2"
             value="${value}${space}-e ${subarg}=${subarg2}"
@@ -1183,7 +1184,7 @@ _COMPILE_CPUMEM()
 _COMPILE_RUN()
 {
     # Internal "macro" function. We don't define any SPACE_ headers for this.
-    local run="\\\${ADD_PROXY_IP:-} --name \${POD_CONTAINER_NAME_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_PORTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_COMMAND_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_MOUNTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_IMAGE_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ARGS_${POD_CONTAINER_COUNT}}"
+    local run="\\\${ADD_PROXY_IP:-} --name \${POD_CONTAINER_NAME_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ENV_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_PORTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_COMMAND_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_MOUNTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_IMAGE_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ARGS_${POD_CONTAINER_COUNT}}"
     _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "RUN" "run"
 }
 
