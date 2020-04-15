@@ -575,7 +575,7 @@ _COMPILE_PODMAN()
                     PRINT "Only config volumes can be encrypted" "error" 0
                     return 1
                 fi
-            else
+            elif [ "${encrypted}" != "false" ]; then
                 PRINT "Unknown value for 'encrypted' for volume ${volume}, ignoring" "warning" 0
             fi
         fi
