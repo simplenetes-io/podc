@@ -320,7 +320,7 @@ containers:
 
                 # Serve an errorfile from HAProxy.
                 # The format is HTTP_ERROR_CODE FILEPATH.
-                # This can be used as a fallback with a low importance to become active when another pod with same ingress rules
+                # This can be used as a fallback with a low weight to become active when another pod with same ingress rules
                 # is taken out of rotation and we want to display a nice "maintenance page".
                 errorfile: 500 /mnt/errorfiles/500.http
 
@@ -342,8 +342,8 @@ containers:
                 # Match on full path, not include query parameters. Exlusice to pathBeg and pathEnd.
                 path: /admin/ /superuser/
 
-                # A higher importance makes this match earlier in the Ingress. Default is 100.
-                importance: 101
+                # A heavier weight makes this match earlier in the Ingress. Default is 100.
+                weight: 101
             - protocol: tcp
 
               # bind is mandatory for general TCP

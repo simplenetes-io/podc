@@ -1322,7 +1322,7 @@ _COMPILE_INGRESS()
             local domain=
             local bind=
             local protocol=
-            local importance=
+            local weight=
             local path_beg=
             local path_end=
             local path=
@@ -1339,9 +1339,9 @@ _COMPILE_INGRESS()
             _copy "domain" "${prefix2}${index1}/domain"
             STRING_SUBST "domain" "'" "" 1
             STRING_SUBST "domain" '"' "" 1
-            _copy "importance" "${prefix2}${index1}/importance"
-            STRING_SUBST "importance" "'" "" 1
-            STRING_SUBST "importance" '"' "" 1
+            _copy "weight" "${prefix2}${index1}/weight"
+            STRING_SUBST "weight" "'" "" 1
+            STRING_SUBST "weight" '"' "" 1
             _copy "path_beg" "${prefix2}${index1}/pathBeg"
             STRING_SUBST "path_beg" "'" "" 1
             STRING_SUBST "path_beg" '"' "" 1
@@ -1386,10 +1386,10 @@ _COMPILE_INGRESS()
                 fi
             fi
 
-            if [ -z "${importance}" ]; then
-                importance="100"
+            if [ -z "${weight}" ]; then
+                weight="100"
             else
-                if [[ ! $importance =~ ^([0-9])+$ ]]; then
+                if [[ ! $weight =~ ^([0-9])+$ ]]; then
                     PRINT "Importance must be an integer." "error" 0
                     return 1
                 fi
@@ -1398,7 +1398,7 @@ _COMPILE_INGRESS()
             lines+=("bind ${bind}")
             lines+=("protocol ${protocol}")
             lines+=("host ${domain}")
-            lines+=("importance ${importance}")
+            lines+=("weight ${weight}")
 
             local httpSpecific=0
             if [ -n "${path}" ]; then
