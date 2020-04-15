@@ -1263,7 +1263,12 @@ _COMPILE_INGRESS()
             fi
 
             if [ "${hostPort}" -lt "1" ] || [ "${hostPort}" -gt "65535" ]; then
-                PRINT "Host port must be between 1 and 65535." "error" 0
+                PRINT "Host port must be between 1 and 65535 (but not 32767)." "error" 0
+                return 1
+            fi
+
+            if [ "${hostPort}" = "32767" ]; then
+                PRINT "Host port cannot be 32767, that port is reserved for the cluster proxy." "error" 0
                 return 1
             fi
 
@@ -1286,7 +1291,7 @@ _COMPILE_INGRESS()
                 fi
 
                 if [ "${clusterPort}" -lt "1024" ] || [ "${clusterPort}" -gt "65535" ]; then
-                    PRINT "Cluster port must be between 1024 and 65535." "error" 0
+                    PRINT "Cluster port must be between 1024 and 65535, but not between 30000-32767." "error" 0
                     return 1
                 fi
 

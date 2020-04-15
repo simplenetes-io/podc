@@ -1175,7 +1175,7 @@ _START_POD()
     local _SPACE_NAME="_START_POD"
 
     local id=
-    if id=$(podman pod start ${POD}); then
+    if id=$(podman pod start "${POD}"); then
         PRINT "Pod ${POD} started: ${id}" "ok" 0
     else
         PRINT "Pod ${POD} could not be started" "error" 0
@@ -1286,7 +1286,7 @@ _STOP_POD()
 
     PRINT "Pod ${POD} stopping..." "info" 0
     local id=
-    if id=$(podman pod stop ${POD} 2>&1); then
+    if id=$(podman pod stop "${POD}" 2>&1); then
         PRINT "Pod ${POD} stopped: ${id}" "ok" 0
     else
         PRINT "Pod ${POD} could not be stopped: ${id}" "error" 0
@@ -1319,7 +1319,7 @@ _SIGNAL_CONTAINER()
         fi
     elif [ -n "${cmd}" ]; then
         PRINT "Container ${container} executing: ${cmd}" "info" 0
-        if ! eval "podman exec "${container}" ${cmd} >/dev/null 2>&1"; then
+        if ! eval "podman exec ${container} ${cmd} >/dev/null 2>&1"; then
             PRINT "Container ${container} could not execute command" "error" 0
             return 1
         fi
@@ -1406,7 +1406,7 @@ _KILL_POD()
 
     PRINT "Pod ${POD} killing..." "info" 0
     local id=
-    if id=$(podman pod kill ${POD} 2>&1); then
+    if id=$(podman pod kill "${POD}" 2>&1); then
         PRINT "Pod ${POD} killed: ${id}" "ok" 0
     else
         PRINT "Pod ${POD} could not be killed: ${id}" "error" 0
@@ -1500,7 +1500,7 @@ _RUN_PROBE()
 
     PRINT "podman exec ${container} ${command}" "debug" 0
 
-    eval "podman exec "${container}" ${command} >/dev/null 2>&1"&
+    eval "podman exec ${container} ${command} >/dev/null 2>&1"&
     local pid="$!"
     while true; do
         if ! kill -0 "${pid}" 2>/dev/null; then

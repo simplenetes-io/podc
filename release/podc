@@ -1580,7 +1580,7 @@ _COMPILE_PODMAN()
                     PRINT "Only config volumes can be encrypted" "error" 0
                     return 1
                 fi
-            else
+            elif [ "${encrypted}" != "false" ]; then
                 PRINT "Unknown value for 'encrypted' for volume ${volume}, ignoring" "warning" 0
             fi
         fi
@@ -1877,6 +1877,7 @@ _COMPILE_ENV()
                 PRINT "Env variable name contains illegal characters: ${subarg}. a-zA-Z0-9_, ha sto start with a letter." "error" 0
                 return 1
             fi
+            local subarg2=
             _copy "subarg2" "/containers/${index}/env/${arg}/value"
             _QUOTE_ARG "subarg2"
             value="${value}${space}-e ${subarg}=${subarg2}"
