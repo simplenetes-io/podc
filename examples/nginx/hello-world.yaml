@@ -36,7 +36,3 @@ containers:
       expose:
           - targetPort: 80
             hostPort: 8080
-            clusterPort: ${clusterPort}
-            ingress:
-                - protocol: http
-                  pathBeg: /

@@ -1,38 +1,3 @@
-# Configuring podman for rootless:
-# The files /etc/sub{uid,gid} need id mappings. Single line in each file as:
-# bashlund:10000:6553
-#
-# That allocates 6553 IDs to be used by containers.
-# Run `podman system migrate` to have podman pick that up.
-
-# If any rootless containers are binding to host ports <1024, then we must set on the host machines `sysctl net.ipv4.ip_unprivileged_port_start=80`
-
-# Rootless pods and containers cannot be paused/unpaused.
-# We don't either support stop/start without having the containers recreated.
-
-# We don't rely on the --restart flag for restarting containers. This module handles all logic.
-# The Simplenetes Daemon could repeatedly call this script so that it can make sure the pod is in the expected state.
-# If the pod is to be in the 'running' state then the daemon will constantly call `./pod run` which
-# is an idempotent command and makes sure all containers are in their right state.
-
-# Restart policies are:
-# always (no matter exit code restart container)
-# on-config (restart when config files on disk are changed or when container exited with error code)
-# on-interval:x (as on-config, but also restart on successful exists after x seconds have passed)
-# on-failure (restart container when exit -ne 0)
-# never (never restart container)
-#
-# Containers set to restart-policy "on-config" it will also restart for failures.
-
-# Role of daemon:
-# The daemon runs as root and as before it invokes this script it creates the ramdisks if not
-# already existing. The daemon spawn an unpriviligied process to run the pod script.
-# If the pod is not existing as the script exits back to the daemon the daemon will remove the ram disks.
-# This script can be run without the daemon preparing the ramdisks but then the contents will be persisted to the host disk instead of a ramdisk, which is fine for development but not for production.
-# States: running -> stopped -> removed
-
-# Do not run the pod script concurrently. If the daemon is managing the pod then we should not call the pod script ourselves.
-
 _GET_CONTAINER_VAR()
 {
     SPACE_SIGNATURE="container_nr varname outname"
@@ -48,7 +13,23 @@ _GET_CONTAINER_VAR()
     local outname="${1}"
     shift
 
-    eval "${outname}=\"\${POD_CONTAINER_${varname}_${container_nr}}\""
+    eval "${outname}=\"\${POD_CONTAINER_${varname}_${container_nr}:-}\""
+}
+
+_SET_CONTAINER_VAR()
+{
+    SPACE_SIGNATURE="container_nr varname value"
+
+    local container_nr="${1}"
+    shift
+
+    local varname="${1}"
+    shift
+
+    local value="${1}"
+    shift
+
+    eval "POD_CONTAINER_${varname}_${container_nr}=\${value}"
 }
 
 # A function to retrieve and clean container information.
@@ -100,8 +81,8 @@ _POD_STATUS()
 
 _KILL_POD()
 {
+    SPACE_DEP="_GET_CONTAINER_VAR _CONTAINER_EXISTS _CONTAINER_STATUS _CONTAINER_KILL PRINT _POD_EXISTS _POD_STATUS"
     #SPACE_ENV="POD"
-    SPACE_DEP="_GET_CONTAINER_VAR _CONTAINER_EXISTS _CONTAINER_STATUS _CONTAINER_KILL PRINT"
 
     local container=
     local container_nr=
@@ -109,19 +90,23 @@ _KILL_POD()
         _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
         if _CONTAINER_EXISTS "${container}"; then
             if [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
-                PRINT "Stopping container ${container}" "info" 0
+                PRINT "Killing container ${container}" "debug" 0
                 _CONTAINER_KILL "${container}"
             fi
         fi
     done
 
-    PRINT "Pod ${POD} killing..." "info" 0
-    local id=
-    if id=$(podman pod kill "${POD}" 2>&1); then
-        PRINT "Pod ${POD} killed: ${id}" "ok" 0
-    else
-        PRINT "Pod ${POD} could not be killed: ${id}" "error" 0
-        return 1
+    if _POD_EXISTS; then
+        local podstatus="$(_POD_STATUS)"
+        if [ "${podstatus}" = "Running" ]; then
+            local id=
+            if id=$(podman pod kill "${POD}" 2>&1); then
+                PRINT "Pod ${POD} killed: ${id}" "debug" 0
+            else
+                PRINT "Pod ${POD} could not be killed: ${id}" "error" 0
+                return 1
+            fi
+        fi
     fi
 }
 
@@ -143,9 +128,10 @@ _CONTAINER_STOP()
     podman stop "${container}" >/dev/null
 }
 
+# Stop all running containers and the pod
 _STOP_POD()
 {
-    SPACE_DEP="_GET_CONTAINER_VAR _CONTAINER_EXISTS _CONTAINER_STATUS _CONTAINER_STOP PRINT"
+    SPACE_DEP="_GET_CONTAINER_VAR _CONTAINER_EXISTS _CONTAINER_STATUS _CONTAINER_STOP PRINT _POD_EXISTS _POD_STATUS"
     #SPACE_ENV="POD"
 
     local container=
@@ -154,26 +140,30 @@ _STOP_POD()
         _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
         if _CONTAINER_EXISTS "${container}"; then
             if [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
-                PRINT "Stopping container ${container}" "info" 0
+                PRINT "Stopping container ${container}" "debug" 0
                 _CONTAINER_STOP "${container}"
             fi
         fi
     done
 
-    PRINT "Pod ${POD} stopping..." "info" 0
-    local id=
-    if id=$(podman pod stop "${POD}" 2>&1); then
-        PRINT "Pod ${POD} stopped: ${id}" "ok" 0
-    else
-        PRINT "Pod ${POD} could not be stopped: ${id}" "error" 0
-        return 1
+    if _POD_EXISTS; then
+        local podstatus="$(_POD_STATUS)"
+        if [ "${podstatus}" = "Running" ]; then
+            local id=
+            if id=$(podman pod stop "${POD}" 2>&1); then
+                PRINT "Pod ${POD} stopped: ${id}" "debug" 0
+            else
+                PRINT "Pod ${POD} could not be stopped: ${id}" "error" 0
+                return 1
+            fi
+        fi
     fi
 }
 
 # Remove the pod and all containers, ramdisks (if created by us), but leave volumes and configs.
 _DESTROY_POD()
 {
-    SPACE_DEP="_DESTROY_RAMDISKS PRINT _GET_CONTAINER_VAR _RM_CONTAINER _CONTAINER_EXISTS"
+    SPACE_DEP="_DESTROY_FAKE_RAMDISKS PRINT _GET_CONTAINER_VAR _RM_CONTAINER _CONTAINER_EXISTS _POD_EXISTS"
 
     local container=
     local container_nr=
@@ -184,20 +174,99 @@ _DESTROY_POD()
         fi
     done
 
-    local id=
-    if ! id="$(podman pod rm -f "${POD}" 2>&1)"; then
-        PRINT "Pod ${POD} could not be destroyed: ${id}" "error" 0
-        return 1
-    else
-        PRINT "Pod ${POD} destroyed" "ok" 0
+    if _POD_EXISTS; then
+        local id=
+        if ! id="$(podman pod rm -f "${POD}" 2>&1)"; then
+            PRINT "Pod ${POD} could not be destroyed: ${id}" "error" 0
+            return 1
+        else
+            PRINT "Pod ${POD} destroyed" "debug" 0
+        fi
     fi
 
-    _DESTROY_RAMDISKS
+    _DESTROY_FAKE_RAMDISKS
+}
+
+_CREATE_RAMDISKS()
+{
+    SPACE_SIGNATURE="delete list"
+    SPACE_DEP="PRINT FILE_STAT"
+
+    local delete="${1}"
+    shift
+
+    local list="${1}"
+    shift
+
+    if [ "${list}" = "true" ]; then
+        if [ -n "${POD_RAMDISKS}" ]; then
+            printf "%s\\n" "${POD_RAMDISKS}" |tr ' ' '\n'
+        fi
+        return
+    fi
+
+    if [ "$(id -u)" != 0 ]; then
+        PRINT "Must be root to create/delete ramdisks" "error" 0
+        return 1
+    fi
+
+    if [ "${delete}" = "true" ]; then
+        local ramdisk=
+        for ramdisk in ${POD_RAMDISKS}; do
+            local diskname="${ramdisk%:*}"
+            local dir="${POD_DIR}/ramdisk/${diskname}"
+            if mountpoint -q "${dir}"; then
+                umount "${dir}"
+            fi
+        done
+        return
+    fi
+
+    local _USERUID=
+    if ! _USERUID="$(FILE_STAT "${POD_DIR}" "%u")"; then
+        PRINT "Could not stat owner of directory ${POD_DIR}, will not run this instance" "error" 0
+        return 1
+    fi
+
+    local _USERGID=
+    if ! _USERGID="$(FILE_STAT "${POD_DIR}" "%g")"; then
+        PRINT "Could not stat owner group of directory ${POD_DIR}, will not run this instance" "error" 0
+        return 1
+    fi
+
+    local ramdisk=
+    for ramdisk in ${POD_RAMDISKS}; do
+        local name="${ramdisk%:*}"
+        local size="${ramdisk#*:}"
+
+        if [ ! -d "${POD_DIR}/ramdisk" ]; then
+            mkdir "${POD_DIR}/ramdisk"
+            chown "${_USERUID}:${_USERGID}" "${POD_DIR}/ramdisk"
+        fi
+
+        if [ ! -d "${POD_DIR}/ramdisk/${name}" ]; then
+            mkdir "${POD_DIR}/ramdisk/${name}"
+            chown "${_USERUID}:${_USERGID}" "${POD_DIR}/ramdisk/${name}"
+        fi
+
+        if mountpoint -q "${POD_DIR}/ramdisk/${name}"; then
+            # Already exists.
+            continue
+        fi
+        if ! mount -t tmpfs -o size="${size}" tmpfs "${POD_DIR}/ramdisk/${name}"; then
+            PRINT "Could not create ramdisk" "error" 0
+            return 1
+        fi
+
+        chown "${_USERUID}:${_USERGID}" "${POD_DIR}/ramdisk/${name}"
+        chmod 700 "${POD_DIR}/ramdisk/${name}"
+
+    done
 }
 
 # If the ramdisks were actually regular directories created by the pod script then we purge them.
-# If the dirs are actual ramdisks then they will get purged by the daemon.
-_DESTROY_RAMDISKS()
+# If the dirs are actual ramdisks then they will get purged by the outside process which created them.
+_DESTROY_FAKE_RAMDISKS()
 {
     SPACE_DEP="PRINT"
     #SPACE_ENV="POD_RAMDISKS"
@@ -214,9 +283,9 @@ _DESTROY_RAMDISKS()
 }
 
 # Check that the ramdisks exist.
-# The outside daemon must create these with root priviligies.
+# The outside daemon must create these with root privileges.
 # However, if they do not exist in the case this pod is not orchestrated but ran directly by the user,
-# we create fake ramdisks on disk by creating the directories. This not at all ramdisks and are not safe for sensitive informaion.
+# we create fake ramdisks on disk by creating the directories. This not at all ramdisks and are not safe for sensitive information.
 _CHECK_RAMDISKS()
 {
     SPACE_DEP="PRINT"
@@ -232,6 +301,9 @@ _CHECK_RAMDISKS()
                 PRINT "Could not create directory ${dir}" "error" 0
                 return 1
             fi
+        elif ! mountpoint -q "${dir}"; then
+            # This can happen on a abrupt shutdown.
+            PRINT "Ramdisk ${diskname} already exists as regular dir (fake ramdisk), was expected to not exist. Directory: ${dir}" "warning" "info" 0
         fi
     done
 }
@@ -239,16 +311,56 @@ _CHECK_RAMDISKS()
 # Create the pod.
 _CREATE_POD()
 {
+    SPACE_SIGNATURE="daemonPid"
+    SPACE_DEP="PRINT"
     #SPACE_ENV="POD_CREATE"
+
+    local pid="${1}"
+    shift
+
+    local starttime=
+    if ! starttime="$(ps --no-headers -p "${pid}" -o lstart)"; then
+        PRINT "Cannot get ps --no-headers -p "${pid}" -o lstart" "error" 0
+        return 1
+    fi
+
+    # We concat pid and start time so that we have a unique fingerprint of the process.
+    # If only using pid there is a minimal risk that another process with the same pid
+    # can be addressed after a reboot.
+    local daemonId="${pid}-${starttime}"
 
     local id=
     # shellcheck disable=2086
-    if id=$(podman pod create ${POD_CREATE}); then
-        PRINT "Pod ${POD} created with id: ${id}" "ok" 0
+    if id=$(podman pod create --label daemonid="${daemonId}" ${POD_CREATE}); then
+        PRINT "Pod ${POD} created with id: ${id}, daemin pid: ${pid}" "ok" 0
     else
         PRINT "Pod ${POD} could not be created" "error" 0
         return 1
     fi
+}
+
+# Get the pod pid and check so that it is valid (it is not after a reboot).
+_POD_PID()
+{
+
+    local label=
+    if ! label="$(podman pod inspect ${POD} |grep "\"daemonid\": .*" -o |cut -d' ' -f2- |tr -d '"')"; then
+        return 1
+    fi
+
+    local pid="${label%%-*}"
+    local starttime="${label#*-}"
+
+    local starttime2=
+    if ! starttime2="$(ps --no-headers -p "${pid}" -o lstart)"; then
+        return 1
+    fi
+
+    if [ "${starttime}" != "${starttime2}" ]; then
+        return 1
+    fi
+
+    printf "%s\\n" "${pid}"
 }
 
 # Start the pod
@@ -259,30 +371,48 @@ _START_POD()
 
     local id=
     if id=$(podman pod start "${POD}"); then
-        PRINT "Pod ${POD} started: ${id}" "ok" 0
+        PRINT "Pod ${POD} started: ${id}" "info" 0
     else
         PRINT "Pod ${POD} could not be started" "error" 0
     fi
 }
 
+# CLI COMMAND
 # Start the pod and run the containers, only if the pod is in the Created state.
 _START()
 {
-    SPACE_DEP="PRINT _POD_EXISTS _POD_STATUS _START_POD _START_CONTAINERS"
+    SPACE_DEP="PRINT _POD_EXISTS _POD_STATUS _START_POD _POD_PID"
 
     if _POD_EXISTS; then
         local podstatus="$(_POD_STATUS)"
         if [ "${podstatus}" = "Running" ]; then
-            PRINT "Pod ${POD} is already running" "debug" 0
-            return 0
-        fi
-        if [ "${podstatus}" = "Created" ]; then
-            if ! _START_POD; then
+            local podPid=
+            if podPid="$(_POD_PID)"; then
+                # All is good
+                PRINT "Pod ${POD} is already running" "info" 0
+                return 0
+            else
+                PRINT "Pod ${POD} does not have it's daemon process alive. Try and rerun the pod" "error" 0
                 return 1
             fi
-            _START_CONTAINERS
+        fi
+        if [ "${podstatus}" = "Created" ]; then
+            local podPid=
+            if podPid="$(_POD_PID)"; then
+                # All is good
+                if ! _START_POD; then
+                    return 1
+                fi
+                PRINT "Start pod ${POD}, signal daemon ${podPid}" "ok" 0
+                # Signal daemon to start
+                kill -s USR1 "${podPid}"
+                return
+            else
+                PRINT "Pod ${POD} does not have it's daemon process alive. Try and rerun the pod" "error" 0
+                return 1
+            fi
         else
-            PRINT "Pod ${POD} is not in the \"Created\" state. Stopping and starting (resuming) pods is not supported. Try and rerun the pod" "error" 0
+            PRINT "Pod ${POD} is not in the \"Created\" state. Stopping and starting (resuming) a pod is not supported. Try and rerun the pod" "error" 0
             return 1
         fi
     else
@@ -334,6 +464,7 @@ _CHECK_HOST_PORTS()
     done
 }
 
+# CLI COMMAND
 # Idempotent command to create all volumes for this pod.
 # If a volume already exists, leave it as it is.
 _CREATE_VOLUMES()
@@ -481,8 +612,9 @@ _CYCLE_CONTAINER()
 
     _RM_CONTAINER "${container}"
     if ! _RUN_CONTAINER "${container}" "${container_nr}"; then
+        # Clean up
         if _CONTAINER_EXISTS "${container}"; then
-            # Kill it first, because it is quicker
+            # Kill it so rm is quicker
             _CONTAINER_KILL "${container}"
             _RM_CONTAINER "${container}"
         fi
@@ -492,10 +624,27 @@ _CYCLE_CONTAINER()
 _RM_CONTAINER()
 {
     SPACE_SIGNATURE="container"
-    SPACE_DEP="PRINT"
+    SPACE_DEP="PRINT _CONTAINER_STOP _CONTAINER_STATUS _GET_CONTAINER_VAR"
 
     local container="${1}"
     shift
+
+    # At this point we expect the container to already be stopped,
+    # but if it is running we stop it gracefully.
+    local containerstatus="$(_CONTAINER_STATUS "${container}")"
+    if [ "${containerstatus}" = "running" ]; then
+        _CONTAINER_STOP "${container}"
+    fi
+
+    # If there is/was a process wrapping the running container, we await its exit before continuing.
+    local pid=
+    _GET_CONTAINER_VAR "${container_nr}" "PID" "pid"
+    if [ -n "${pid}" ]; then
+        while kill -0 "${pid}" 2>/dev/null; do
+            sleep 1
+        done
+        wait "${pid}" 2>/dev/null >&2
+    fi
 
     local id=
     if id=$(podman rm -f "${container}" 2>&1); then
@@ -511,15 +660,13 @@ _RM_CONTAINER()
 _RUN_CONTAINER()
 {
     SPACE_SIGNATURE="container container_nr"
-    SPACE_DEP="_SIGNAL_CONTAINER _CONTAINER_EXISTS _CONTAINER_EXITCODE _CONTAINER_STATUS PRINT NETWORK_LOCAL_IP _PULL_IMAGE FILE_STAT _LOG_FILE _RUN_PROBE"
+    SPACE_DEP="_SIGNAL_CONTAINER _CONTAINER_EXISTS _CONTAINER_EXITCODE _CONTAINER_STATUS PRINT NETWORK_LOCAL_IP _PULL_IMAGE FILE_STAT _LOG_FILE _RUN_PROBE _SET_CONTAINER_VAR"
 
     local container="${1}"
     shift
 
     local container_nr="${1}"
     shift
-
-    PRINT "Run container ${container}" "info" 0
 
     # We need to supply the container with a PROXY address, which it uses to communicate with other Pods
     # via the proxy process running outside the containers, on the host.
@@ -542,37 +689,46 @@ _RUN_CONTAINER()
         return 1
     fi
 
+    local startCount=
+    _GET_CONTAINER_VAR "${container_nr}" "STARTCOUNT" "startCount"
+    startCount="${startCount:-0}"
+    startCount="$((startCount+1))"
+    _SET_CONTAINER_VAR "${container_nr}" "STARTCOUNT" "${startCount}"
+
     local run=
     _GET_CONTAINER_VAR "${container_nr}" "RUN" "run"
 
-    local stdoutLog="${container}-stdout.log"
-    local stderrLog="${container}-stderr.log"
+    local stdoutLog="${POD_LOG_DIR}/${container}-stdout.log"
+    local stderrLog="${POD_LOG_DIR}/${container}-stderr.log"
 
     local pid=
     # Run the container from a subshell, so we can capture stdout and stderr separately.
+    # There is a concurrent write to STDERR here, but the main process is waiting for
+    # this process to finish, so the risk of interleving output is not huge.
     (
         local ts="$(date +%s)"
-        local status=
-        printf "%s [SNT] Run %s: podman run %s\\n" "${ts}" "${container}" "${run}" >>"${stderrLog}"
         { eval "podman run ${run}" |_LOG_FILE "${stdoutLog}" "${MAX_LOG_FILE_SIZE}"; } 2>&1 |
             _LOG_FILE "${stderrLog}" "${MAX_LOG_FILE_SIZE}"
-        # Container has exited
-        status="$?"
+        # Container has exited or run command failed
         local containerstatus="$(_CONTAINER_STATUS "${container}")"
         if [ "${containerstatus}" = "exited" ]; then
-            printf "%s [SNT] %s exited with exit code %s\\n" "${ts}" "${container}" "${status}" >>"${stderrLog}"
+            local exitcode="$(_CONTAINER_EXITCODE "${container}")"
+            PRINT "Container ${container} exited with exit code: ${exitcode}" "info" 0
         else
-            printf "%s [SNT] %s ended, with state %s\\n" "${ts}" "${container}" "${containerstatus}" >>"${stderrLog}"
+            PRINT "Container ${container} ended with state: ${containerstatus}" "info" 0
         fi
-    ) >/dev/null 2>/dev/null &
+    ) &
     pid="$!"
+    _SET_CONTAINER_VAR "${container_nr}" "PID" "${pid}"
     PRINT "Subshell PID is ${pid} for container ${container}" "debug" 0
 
-    # Wait for container to be running or exited, if it timeoutes then the startup failed
+    # Wait for container to be running or exited, if it timeouts then the startup failed
     local now=$(date +%s)
     local timeout=$((now + 3))
     # Small risk here is if container starts, exits and is removed within the same second,
-    # then this logic will fail.
+    # then this logic will fail, meaning that the container will be treated as if it failed to start.
+    # However, we do not automatically remove containers after they exit so risk is non real.
+    # A second minimal risk is that if the subprocess never gets prio and run, then the logic will timeout.
     while true; do
         sleep 1
         local containerstatus="$(_CONTAINER_STATUS "${container}")"
@@ -621,6 +777,7 @@ _RUN_CONTAINER()
                 # Run this in subprocess and kill it if it takes too long.
                 if _RUN_PROBE "${container}" "${startupProbe}" "${timeout}"; then
                     # Probe succeded
+                    PRINT "Startup probe successful for ${container}" "info" 0
                     break
                 fi
             fi
@@ -646,21 +803,13 @@ _RUN_CONTAINER()
         local container=
         for container_nr in ${signals}; do
             _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
-
-            # Only signal a container which is running
-            if _CONTAINER_EXISTS "${container}"; then
-                if [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
-                    _SIGNAL_CONTAINER "${container}" "${container_nr}"
-                else
-                    PRINT "Container ${container} is not running, will not signal it" "info" 0
-                fi
-            fi
+            _SIGNAL_CONTAINER "${container}" "${container_nr}"
         done
     fi
 }
 
 # Read on STDIN and write to "file",
-# when file grows over "ywaxFileSize" "file" is rotated out
+# when file grows over "waxFileSize" "file" is rotated out
 # and a new "file" is created.
 _LOG_FILE()
 {
@@ -696,11 +845,13 @@ _LOG_FILE()
     done
 }
 
-# Expects the container to be running.
+# If the container has defined a signal and it is running, signal it.
+# If the container is not running but it exists then restart it if its restart policy is on-config or on-interval.
+# If the container does not exist do nothing.
 _SIGNAL_CONTAINER()
 {
     SPACE_SIGNATURE="container container_nr"
-    SPACE_DEP="PRINT _GET_CONTAINER_VAR"
+    SPACE_DEP="PRINT _GET_CONTAINER_VAR _CONTAINER_EXISTS _CONTAINER_STATUS _CYCLE_CONTAINER _RERUN"
 
     local container="${1}"
     shift
@@ -714,21 +865,41 @@ _SIGNAL_CONTAINER()
     local sig=
     _GET_CONTAINER_VAR "${container_nr}" "SIGNALSIG" "sig"
 
-    if [ -n "${sig}" ]; then
-        PRINT "Container ${container} signalled ${sig}" "ok" 0
-        local msg=
-        if ! msg=$(podman kill --signal "${sig}" "${container}" 2>&1); then
-            PRINT "Container ${container} could not be signalled: ${msg}" "error" 0
-            return 1
-        fi
-    elif [ -n "${cmd}" ]; then
-        PRINT "Container ${container} executing: ${cmd}" "info" 0
-        if ! eval "podman exec ${container} ${cmd} >/dev/null 2>&1"; then
-            PRINT "Container ${container} could not execute command" "error" 0
-            return 1
+    if ! _CONTAINER_EXISTS "${container}"; then
+        PRINT "Container ${container} does not exist and cannot be signalled nor restarted" "debug" 0
+        return
+    fi
+
+    if [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
+        # If the container is running then signal it
+        if [ -n "${sig}" ]; then
+            PRINT "Container ${container} signalled ${sig}" "ok" 0
+            local msg=
+            if ! msg=$(podman kill --signal "${sig}" "${container}" 2>&1); then
+                PRINT "Container ${container} could not be signalled: ${msg}" "error" 0
+                return 1
+            fi
+        elif [ -n "${cmd}" ]; then
+            PRINT "Container ${container} executing: ${cmd}" "info" 0
+            if ! eval "podman exec ${container} ${cmd} >/dev/null 2>&1"; then
+                PRINT "Container ${container} could not execute command" "error" 0
+                return 1
+            fi
+        else
+            PRINT "Container ${container} does not define any signal and cannot be signalled" "debug" 0
+            return
         fi
     else
-        PRINT "Container ${container} does not define any signals and cannot be signalled" "info" 0
+        # If container is not running, cycle it as long as its restart policy allows
+        local restartpolicy=
+        _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restartpolicy"
+        # Restart on on-config and on-interval:x
+        # Do not restart on never or on-failure
+        if [ "${restartpolicy}" = "on-config" ] || [ "${restartpolicy%:*}" = "on-interval" ]; then
+            _RERUN "false" "${container}"
+        else
+            PRINT "Container ${container} is not restarted due to its restart policy" "debug" 0
+        fi
     fi
 }
 
@@ -791,6 +962,8 @@ _SHOW_USAGE()
 
     status
         Output current runtime status for this pod.
+        This function outputs the \"pod.status\" file if it exists and the daemon process exists.
+        Otherwise status outputted is \"unknown\".
 
     download [-f]
         Perform pull on images for all containers.
@@ -798,9 +971,11 @@ _SHOW_USAGE()
 
     create
         Create the pod and the volumes, but not the containers. Will not start the pod.
+        Will create the main persistent process.
 
     start
         Start the pod and run the containers, as long as the pod is already created.
+        Signals the daemon process to start.
 
     stop
         Stop the pod and all containers.
@@ -810,26 +985,28 @@ _SHOW_USAGE()
 
     run
         Create and start the pod and all containers.
-        This command is safe to run over and over and it will then recreate and failed
-        containers, depending on their restart policy.
-        Note that containers which crash will only be restarted when issuing this run command.
+        The pod daemon will make sure all containers are kept according to their state and
+        react to config changes.
 
-    rm
+    rm [-k]
         Remove the pod and all containers, but leave volumes intact.
         If the pod and containers are running they will be stopped first and then removed.
+        If -k flag is set then containers will be killed instead of stopped.
 
-    rerun [container1 container2 etc]
+    rerun [-k] [container1 container2 etc]
         Remove the pod and all containers then recreate and start them.
         Same effect as issuing rm and run in sequence.
         If container name(s) are provided then only cycle the containers, not the full pod.
+        If -k flag is set then pod will be killed instead of stopped (not valid when defining individual containers).
 
     signal [container1 container2 etc]
         Send a signal to one, many or all containers.
         The signal sent is the SIG defined in the containers YAML specification.
         Invoking without arguments will invoke signals all all containers which have a SIG defined.
 
-    logs [containers] [-t timestamp] [-s streams] [-l limit] [-d details]
+    logs [containers] [-p] [-t timestamp] [-s streams] [-l limit] [-d details]
         Output logs for one, many or all containers. If none given then show for all.
+        -p Show pod daemon process logs (if set will not show any container logs)
         -t timestamp=UNIX timestamp to get logs from, defaults to 0
         -s streams=[stdout|stderr|stdout,stderr], defaults to \"stdout,stderr\".
         -l limit=nr of lines to get in total from the top, negative gets from the bottom (latest).
@@ -845,34 +1022,24 @@ _SHOW_USAGE()
         Volumes are always created when running the pod, this command can be used
         to first create the volumes and possibly populate them with data, before running the pod.
 
+    create-ramdisks [-l] [-d]
+        If run as sudo/root create the ramdisks used by this pod.
+        If -d flag is set then delete existing ramdisks, requires sudo/root.
+        If -l flag is provided list ramdisks configuration (used by external tools to provide the ramdisks).
+        If ramdisks are not prepared prior to the pod starting up then the pod will it self
+        create regular directories (fake ramdisks) instead of real ramdisks. This is a fallback
+        strategy in the case sudo/root priviligies are not available or if just running in dev mode.
+        For applications where the security of ramdisks are important then ramdisks
+        should be properly created.
+
     reload-configs config1 [config2 config3 etc]
-        When a \"config\" has been updated on disk, this command should be invoked to signal the container
-        who mount the specific config(s).
+        When a \"config\" has been updated on disk, this command is automatically invoked to signal the container who mount the specific config(s).
+        It can also be manually run from command line to trigger a config reload.
         Each container mounting the config will be signalled as defined in the YAML specification.
 
     purge
         Remove all volumes for a pod.
-        the pod must first have been removed.
-
-    readiness
-        Run the readiness probe on the containers who has one defined.
-        An exit code of 0 means the readiness fared well and all applicable containers are ready to receive traffic.
-        The readiness probe is defined in the YAML describing each container.
-
-    liveness
-        Run the liveness probe on the containers who has one defined.
-        If the probe fails on a container the container will be stopped.
-        It is up to the daemon or the user to issue the 'run' command again to have that container started up again.
-        An exit code of 1 means that at least one container was found in a bad state and stopped.
-        The liveness probe is defined in the YAML describing each container.
-
-    ramdisk-config
-        Output information about what ramdisks this pod wants.
-        This command is ran be the Daemon so it can prepare the ramdisks needed for this pod.
-        If ramdisks are not prepared prior to the pod starting up then the pod will it self
-        create regular directories instead of real ramdisks.
-        This means that for applications where the security of ramdisks are important then
-        the lifecycle of the pods should be managed by the Daemon.
+        The pod must first have been removed.
 "
 }
 
@@ -902,48 +1069,66 @@ _SHOW_INFO()
     done
 }
 
-# Show the current status of the pod and it's containers and volumes
+# Show the current status of the pod and its containers and volumes
+# This function output the pod.state file (if it is fresh) otherwise it outputs a new summary.
 _SHOW_STATUS()
 {
-    SPACE_DEP="_GET_CONTAINER_VAR _CONTAINER_STATUS"
-    # TODO: fields missing and needs to be structured.
-    #printf "%s\\n" "Podname
-#CONTAINER   STATE   RESTART   MOUNTS   PORTS   IMAGE
-#"
+    SPACE_DEP="_GET_CONTAINER_VAR STRING_TRIM"
+    #SPACE_ENV="POD_FILE"
 
-    local container_nr=
-    for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
-        local name=
-        _GET_CONTAINER_VAR "${container_nr}" "NAME" "name"
-        printf "Container: %s\\n" "${name}"
+    local statusFile="${POD_FILE}.status"
 
-        printf "Status: "
-        _CONTAINER_STATUS "${name}"
-    done
+    if [ ! "${statusFile}" ]; then
+        printf "%s\\n" "pod: ${POD}
+status: unknown"
+        return
+    fi
+
+    # Read the file
+    local contents=
+    contents="$(cat "${statusFile}")"
+
+    # Check so that PID still exists
+    local pid="$(printf "%s\\n" "${contents}" |grep "pid:")"
+    pid="${pid#*:}"
+    STRING_TRIM "pid"
+    if [ -n "${pid}" ] && ! kill -0 "${pid}" 2>/dev/null; then
+        printf "%s\\n" "pod: ${POD}
+status: unknown"
+    else
+        printf "%s\\n" "${contents}"
+    fi
 }
 
+# CLI COMMAND
 # Idempotent command.
+# Check if pod exists
 # Create the pod and the volumes (not the containers), but do not start the pod.
 # If the pod exists and is in the created or running state then this function does nothing.
 # If the pod exists but is not in created nor running state then the whole pod is removed with all containers (volumes are not removed) and the pod is recreated.
 _CREATE()
 {
-    SPACE_DEP="_CHECK_HOST_MOUNTS _CHECK_HOST_PORTS _CREATE_POD _CREATE_VOLUMES _CHECK_RAMDISKS _DESTROY_POD _POD_STATUS PRINT _POD_EXISTS"
+    SPACE_DEP="_CHECK_HOST_MOUNTS _CHECK_HOST_PORTS _CREATE_POD _CREATE_VOLUMES _CHECK_RAMDISKS _DESTROY_POD _POD_STATUS PRINT _POD_EXISTS _POD_PID _DESTROY_FAKE_RAMDISKS"
 
     if _POD_EXISTS; then
-        PRINT "Pod ${POD} already exists" "debug" 0
+        PRINT "Pod ${POD} already exists, checking status" "debug" 0
         local podstatus="$(_POD_STATUS)"
         if [ "${podstatus}" = "Created" ] || [ "${podstatus}" = "Running" ]; then
-            # Do nothing
-            return 0
-        else
-            # Destroy pod and all containers
-            PRINT "Pod ${POD} is in a bad state, destroy it and all containers (leave volumes)" "info" 0
-            if ! _DESTROY_POD; then
-                return 1
+            local podPid=
+            if podPid="$(_POD_PID)"; then
+                # All is good
+                PRINT "Pod ${POD} already created" "info" 0
+                return
             fi
-            # Fall through
+            # Fall through if we need to recreate the pod
         fi
+
+        # Destroy pod and all containers
+        PRINT "Pod ${POD} is in a bad state, destroy it and all containers (leave volumes)" "info" 0
+        if ! _DESTROY_POD; then
+            return 1
+        fi
+        # Fall through
     fi
 
     if ! _CHECK_HOST_PORTS; then
@@ -954,54 +1139,407 @@ _CREATE()
         return 1
     fi
 
-    PRINT "Check ramdisks" "info" 0
-    if ! _CHECK_RAMDISKS; then
-        return 1
-    fi
-
     if ! _CREATE_VOLUMES; then
         PRINT "Could not create volumes" "error" 0
         return 1
     fi
 
+    PRINT "Check ramdisks" "info" 0
+    if ! _CHECK_RAMDISKS; then
+        return 1
+    fi
+
+    # Create the daemon process
+    local pid=
+    if ! pid="$(setsid $0 porcelain-create)"; then
+        PRINT "Could not create daemon process" "error" 0
+        _DESTROY_FAKE_RAMDISKS
+        return 1
+    fi
+
     PRINT "Create pod" "info" 0
-    _CREATE_POD
+    if ! _CREATE_POD "${pid}"; then
+        _DESTROY_FAKE_RAMDISKS
+        return 1
+    fi
 }
 
+# Create the daemon process and outputs its pid on stdout.
+#
+# The script must have been invoked using `setsid` when calling this function.
+# setsid creates a new session id for this process.
+# When forking our new pid is != gpid and != sid, meaning we can become a daemon process.
+# We need to close stdin/out/err also,
+# we are already cd'd to pod dir, which is expected to never be unmounted.
+_CREATE_FORK()
+{
+    SPACE_SIGNATURE="logdir"
+    SPACE_DEP="_DAEMON_PROCESS _LOG_FILE"
 
-# Idempotent commands which makes sure that the pod and all containers are running as expected.
-# It will rerun containers which have exited but should be running according to the policy.
-# First call create() to make sure the pod is created or recreated if needed,
-# start the pod if in created state,
-# call _START_CONTAINERS to make sure each indivudal container is running as expected.
+    local stdoutLog="${POD_LOG_DIR}/${POD}-stdout.log"
+    local stderrLog="${POD_LOG_DIR}/${POD}-stderr.log"
+
+    # Need a way of getting the (right) PID out,
+    # which is non trivial since we have some piping action going on.
+    local pipe="$(mktemp -u)"
+    mkfifo "${pipe}"
+    exec 3<>"${pipe}"
+
+    (
+        # Close file descriptors
+        exec 0<&-
+        exec 1>&-
+        exec 2>&-
+        { _DAEMON_PROCESS |_LOG_FILE "${stdoutLog}" "${MAX_LOG_FILE_SIZE}"; } 2>&1 |
+            _LOG_FILE "${stderrLog}" "${MAX_LOG_FILE_SIZE}"
+    ) &
+
+    local pid=
+    while IFS= read -r pid; do
+        break
+    done <"${pipe}"
+    exec 3>&-
+    rm "${pipe}"
+
+    printf "%s\\n" "${pid}"
+}
+
+# Process which will tend to the state of the pod
+# Listen to signal USR1 which means start all containers.
+# Listen to signal TERM which means term all containers.
+# Listen to signal USR2 which means kill all containers.
+# If containers (other than infra) are manually stopped/killed/removed then the restart policy will be enforced.
+# If the pod infra container is stopped/killed/removed the daemon will clean up and exit.
+_DAEMON_PROCESS()
+{
+    SPACE_DEP="_START_CONTAINERS _CHECK_CONFIG_CHANGES _CYCLE_CONTAINER _GET_CONTAINER_VAR _POD_EXISTS _POD_STATUS _RELOAD_CONFIGS2 _KILL_POD _STOP_POD _LIVENESS_PROBE _READINESS_PROBE _WRITE_STATUS_FILE _CONTAINER_STOP"
+
+    local _CONFIGCHKSUMS=""
+
+    local created="$(date +%s)"
+    local started=""
+
+    # $$ does not work in a forked process using shell,
+    # so we use this trick to get our PID.
+    local pid="$(sh -c 'echo $PPID')"
+
+    # The caller is awaiting the pid on FD 3
+    printf "%s\\n" "${pid}" >&3
+
+    local signalStart=0
+    local signalStop=0
+    local signalKill=0
+
+    trap 'signalStart=1' USR1
+    trap 'signalStop=1' TERM HUP
+    trap 'signalKill=1' USR2
+
+    # Setup container rerun traps
+    local index=
+    for index in $(seq 34 64); do
+        eval "local signal${index}=0"
+        eval "trap \"signal${index}=1\" ${index}"
+    done
+
+    PRINT "Pod daemon started with pid ${pid}, waiting on start signal" "info" 0
+
+    _WRITE_STATUS_FILE "${created}" "" "created" "0" "${pid}"
+
+    # Wait for signal to start (or quit).
+    while [ "${signalStart}" = "0" ] && [ "${signalStop}" = "0" ] && [ "${signalKill}" = "0" ]; do
+        sleep 1
+    done
+
+    if [ "${signalStart}" = "1" ]; then
+        PRINT "Daemon got start signal" "info" 0
+        started="$(date +%s)"
+        _WRITE_STATUS_FILE "${created}" "${started}" "starting" "0" "${pid}"
+    fi
+
+    while [ "${signalStop}" = "0" ] && [ "${signalKill}" = "0" ]; do
+        # Check pod state
+        # If pod was manually stopped/removed/changed then we take that as a hint to self destruct.
+        if ! _POD_EXISTS; then
+            # Pod mas manually removed, TERM ourselves.
+            signalStop="1"
+            break
+        fi
+
+        local podstatus="$(_POD_STATUS)"
+        if [ "${podstatus}" != "Running" ]; then
+            # Pod mas manually halted, TERM ourselves.
+            signalStop="1"
+            break
+        fi
+
+        # Start/restart containers
+        # This can potentially take many minutes before done.
+        if ! _START_CONTAINERS; then
+            # If some container can't be created we sleep some extra and try again.
+            # Set readiness to 0.
+            _WRITE_STATUS_FILE "${created}" "${started}" "starting" "0" "${pid}"
+            sleep 10
+            continue
+        fi
+
+        ## Check config changes
+        local _out_changedList=""
+        if ! _CHECK_CONFIG_CHANGES; then
+            PRINT "Could not lookup config directories" "error" 0
+            signalStop="1"
+            break
+        fi
+        # Act on config changes
+        local configDir=
+        for configDir in ${_out_changedList}; do
+            local config="${configDir#${POD_DIR}/config/}"
+            PRINT "Reloading config ${config}" "info" 0
+            _RELOAD_CONFIGS2 "${config}"
+        done
+
+        local readiness=0
+        # Check readiness
+        if _READINESS_PROBE; then
+            readiness=1
+        fi
+
+        # Default sleep period
+        local sleepSeconds=6
+
+        # Check liveness
+        if ! _LIVENESS_PROBE; then
+            # If some container failed, don't sleep for very long
+            # so it can quickly get restarted
+            sleepSeconds=1
+        fi
+
+        _WRITE_STATUS_FILE "${created}" "${started}" "running" "${readiness}" "${pid}"
+
+        # Check container cycle signals, while we sleep
+        while [ "${sleepSeconds}" -gt 0 ]; do
+            local index=
+            for index in $(seq 34 64); do
+                local cycle=0
+                eval "cycle=\$signal${index}"
+                if [ "${cycle}" = "1" ]; then
+                    eval "signal${index}=0"
+                    local container_nr="$((index-33))"
+                    local container=
+                    _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+                    if [ -z "${container}" ]; then
+                        PRINT "Got restart signal ${index} but no container for given index: ${container_nr}" "error" 0
+                        break
+                    fi
+                    PRINT "Got restart signal for container: ${container}" "info" 0
+                    _CONTAINER_STOP "${container}"
+                    _CYCLE_CONTAINER "${container}" "${container_nr}"
+                fi
+            done
+            if [ "${signalStop}" = "1" ] || [ "${signalKill}" = "1" ]; then
+                break 2
+            fi
+            sleep 1
+            sleepSeconds="$((sleepSeconds-1))"
+        done
+    done
+
+    ## End pod and daemon
+
+    # Clear container traps
+    trap - USR1 USR2 TERM HUP
+    local index=
+    for index in $(seq 34 64); do
+        eval "trap - ${index}"
+    done
+
+    # Check whether to stop or kill containers and pod
+    if [ "${signalKill}" = "1" ]; then
+        _KILL_POD
+    else
+        _STOP_POD
+    fi
+
+    PRINT "Daemon with pid ${pid} exited" "info" 0
+
+    _WRITE_STATUS_FILE "${created}" "${started}" "exited" "0" ""
+}
+
+# Write to status file 
+_WRITE_STATUS_FILE()
+{
+    SPACE_SIGNATURE="created started status readiness pid"
+    SPACE_DEP="_CONTAINER_STATUS _GET_CONTAINER_VAR _CONTAINER_EXITCODE "
+
+    local created="${1}"
+    shift
+
+    local started="${1}"
+    shift
+
+    local status="${1}"
+    shift
+
+    local readiness="${1}"
+    shift
+
+    local pid="${1}"
+    shift
+
+    local statusFile="${POD_FILE}.status"
+    local updated="$(date +%s)"
+
+    local contents="pod: ${POD}
+created: ${created}
+started: ${started}
+status: ${status}
+pid: ${pid}
+readiness: ${readiness}
+"
+
+    local containers=""
+
+    if [ "${status}" = "started" ] || [ "${status}" = "running" ]; then
+        # started/running
+        # Get container statuses
+        containers="containers:
+"
+        local container_nr=
+        for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+            local container=
+            _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+            local startCount=
+            _GET_CONTAINER_VAR "${container_nr}" "STARTCOUNT" "startCount"
+            local containerstatus="$(_CONTAINER_STATUS "${container}")"
+            local exitcode=""
+            if [ "${containerstatus}" != "running" ]; then
+                exitcode="$(_CONTAINER_EXITCODE "${container}")"
+            fi
+
+            containers="${containers} - container: ${container}
+   startCount: ${startCount:-0}
+   status: ${containerstatus}
+"
+            if [ -n "${exitcode}" ]; then
+                containers="${containers}exitCode: ${exitcode}
+"
+            fi
+        done
+    fi
+
+    printf "%s%s" "${contents}" "${containers}" >"${statusFile}.tmp"
+    mv -f "${statusFile}.tmp" "${statusFile}"
+}
+
+# Check if any configs have changed for the given pods.
+_CHECK_CONFIG_CHANGES()
+{
+    SPACE_DEP="FILE_DIR_CHECKSUM STRING_ITEM_INDEXOF STRING_ITEM_GET"
+
+    local _changedList=""
+    local newList=""
+
+    local configsDir="${POD_DIR}/config"
+
+    # Get the checksum of each config dir in the pod dir.
+    local configDir=
+    for configDir in $(find "${configsDir}" -maxdepth 1 -mindepth 1 -type d 2>/dev/null); do
+        # Get previous checksum, if any
+        local chksumPrevious=
+        local index=
+        if STRING_ITEM_INDEXOF "${_CONFIGCHKSUMS}" "${configDir}" "index"; then
+            STRING_ITEM_GET "${_CONFIGCHKSUMS}" "$((index+1))" "chksumPrevious"
+        fi
+
+        local chksum=
+        if ! chksum=$(FILE_DIR_CHECKSUM "${configDir}"); then
+            return 1
+        fi
+
+        if ! [ "${chksum}" = "${chksumPrevious}" ]; then
+            # Mismatch, store it in changed list, unless this was the first time
+            if [ -n "${chksumPrevious}" ]; then
+                _out_changedList="${_out_changedList}${_out_changedList:+ }${configDir}"
+            fi
+        fi
+        newList="${newList}${newList:+ }${configDir} ${chksum}"
+    done
+
+    _CONFIGCHKSUMS="${newList}"
+}
+
+# CLI COMMAND
+# Idempotent commands which makes sure that the pod is created and started.
 _RUN()
 {
-    SPACE_DEP="_START_CONTAINERS _DESTROY_POD PRINT _START_POD _POD_STATUS _CREATE _POD_EXISTS"
-
-    local podexists=
-    _POD_EXISTS
-    podexists="$?"
+    SPACE_DEP="PRINT _START _CREATE"
 
     if ! _CREATE; then
         return 1
     fi
 
-    local podstatus="$(_POD_STATUS)"
-    if [ "${podstatus}" != "Running" ]; then
-        if ! _START_POD; then
-            _DESTROY_POD
+    if ! _START; then
+        return 1
+    fi
+}
+
+# CLI COMMAND
+# If pod is running it and all containers will be stopped/killed.
+# Make sure the pod and containers are removed, volumes are not removed.
+# Create pod and all containers and start it all up.
+_RERUN()
+{
+    SPACE_SIGNATURE="kill [containers]"
+    SPACE_DEP="PRINT _GET_CONTAINER_VAR _RM _RUN _POD_EXISTS _POD_STATUS _POD_PID"
+
+    local kill="${1:-false}"
+    shift
+
+    if [ "$#" -gt 0 ]; then
+        # Rerun specific containers only
+        if ! _POD_EXISTS; then
+            PRINT "Pod does not exist" "error" 0
             return 1
         fi
-    else
-        PRINT "Pod ${POD} is already running" "debug" 0
-    fi
 
-    if ! _START_CONTAINERS && [ "${podexists}" -ne 0 ]; then
-        # If a container fails to start in the pod creation phase,
-        # then we don't allow the pod to run.
-        # In the creation phase we expect the pod and all containers to successfully run.
-        _DESTROY_POD
-        return 1
+        local podstatus="$(_POD_STATUS)"
+        if [ "${podstatus}" != "Running" ]; then
+            PRINT "Pod is not running, try to rerun the whole pod" "error" 0
+            return 1
+        fi
+
+        local podPid=
+        if ! podPid="$(_POD_PID)"; then
+            PRINT "Pod daemon does not exist, try and rerun the whole pod" "error" 0
+            return 1
+        fi
+
+        local container=
+        local container_nr=
+        for container in "$@"; do
+            container="${container}-${POD}"
+            local container2=
+            for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
+                if [ "${container}" = "${container2}" ]; then
+                    # Calculate the signal index for the container
+                    # Real time signals start at index 34 and end at 64.
+                    local restartIndex="$((33+container_nr))"
+                    if [ "${restartIndex}" -gt 64 ]; then
+                        PRINT "Cannot restart container ${container} because we are out of signals. You have to many containers in the pod. Try to rearrange containers you want to restart to be earlier in the list" "error" 0
+                        continue 2
+                    fi
+                    PRINT "Cycle container ${container}" "info" 0
+                    # Signal daemon.
+                    kill -s "${restartIndex}" "${podPid}"
+                    continue 2
+                fi
+            done
+            PRINT "Container ${container} does not exist in this pod" "error" 0
+        done
+    else
+        # Rerun the whole pod
+        _RM "${kill}"
+        _RUN
     fi
 }
 
@@ -1074,35 +1612,73 @@ _START_CONTAINERS()
     done
 }
 
+# CLI COMMAND
 # Stop the pod and all containers.
 _STOP()
 {
-    SPACE_DEP="_STOP_POD"
+    SPACE_DEP="_STOP_POD _POD_PID"
 
-    _STOP_POD
-}
-
-# Kill the pod and all containers.
-_KILL()
-{
-    SPACE_DEP="_KILL_POD"
-
-    _KILL_POD
-}
-
-# Remove the pod and all it's containers if the pod is not in it's running state (if so stop it first).
-_RM()
-{
-    SPACE_DEP="_DESTROY_POD _POD_EXISTS PRINT _STOP_POD"
-
-    if _POD_EXISTS; then
-        _STOP_POD
-        _DESTROY_POD
+    local podPid=
+    if podPid="$(_POD_PID)"; then
+        # Ask the daemon to stop the pod
+        kill -s TERM "${podPid}"
+        while kill -0 "${podPid}" 2>/dev/null; do
+            sleep 1
+        done
+        return 0
     else
-        PRINT "Pod does not exist" "info" 0
+        # Make sure it is stopped
+        _STOP_POD
     fi
 }
 
+# CLI COMMAND
+# Kill the pod and all containers.
+_KILL()
+{
+    SPACE_DEP="_KILL_POD _POD_PID"
+
+    local podPid=
+    if podPid="$(_POD_PID)"; then
+        # Ask the daemon to kill the pod
+        kill -s USR2 "${podPid}"
+        while kill -0 "${podPid}" 2>/dev/null; do
+            sleep 1
+        done
+        return 0
+    else
+        # Daemon not alive.
+        # Make sure it is killed
+        _KILL_POD
+    fi
+}
+
+# CLI COMMAND
+# Remove the pod and all it's containers.
+# If the pod is running, stop/kill it first.
+_RM()
+{
+    SPACE_SIGNATURE="[kill]"
+    SPACE_DEP="_DESTROY_POD _POD_EXISTS PRINT _STOP _KILL"
+
+    local kill="${1-false}"
+    shift $(($# > 0 ? 1 : 0))
+
+    if _POD_EXISTS; then
+        if [ "${kill}" = "true" ]; then
+            _KILL
+        else
+            _STOP
+        fi
+    else
+        PRINT "Pod does not exist" "debug" 0
+        # Fall through, because there might be containers lingering and ramdisks to clean up even if someone removed the pod infra container.
+    fi
+
+    _DESTROY_POD
+}
+
+# CLI COMMAND
 # Output logs for one or many containers
 _LOGS()
 {
@@ -1121,6 +1697,9 @@ _LOGS()
     local details="${1:-ts,name}"
     shift
 
+    local podLogs="${1:-false}"
+    shift
+
     STRING_SUBST "streams" ',' ' ' 1
     STRING_SUBST "details" ',' ' ' 1
 
@@ -1135,30 +1714,34 @@ _LOGS()
         return 1
     fi
 
-    local container_nr=
     local containers=""
-    if [ "$#" -eq 0 ]; then
-        # Get all containers
-        for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
-            _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
-            containers="${containers} ${container}"
-        done
+    if [ "${podLogs}" = "true" ]; then
+        # The daemon process logs
+        containers="${POD}"
     else
-        local container=
-        for container in "$@"; do
-            container="${container}-${POD}"
+        local container_nr=
+        if [ "$#" -eq 0 ]; then
+            # Get all containers
             for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
-                local container2=
-                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
-                if [ "${container2}" = "${container}" ]; then
-                    containers="${containers} ${container}"
-                    continue 2
-                fi
+                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+                containers="${containers} ${container}"
             done
-            PRINT "Container ${container} does not exist in this pod" "error" 0
-            #return 1
-            containers="${containers} ${container}"
-        done
+        else
+            local container=
+            for container in "$@"; do
+                container="${container}-${POD}"
+                for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+                    local container2=
+                    _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
+                    if [ "${container2}" = "${container}" ]; then
+                        containers="${containers} ${container}"
+                        continue 2
+                    fi
+                done
+                PRINT "Container ${container} does not exist in this pod" "error" 0
+                return 1
+            done
+        fi
     fi
 
     # For each container, check if there are logfiles for the streams chosen,
@@ -1223,6 +1806,7 @@ _LOGS()
         }
 }
 
+# CLI COMMAND
 # Signal one or many containers.
 _SIGNAL()
 {
@@ -1252,67 +1836,22 @@ _SIGNAL()
     fi
 
     for container in ${containerNames}; do
-        if [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
-            # If the container is running then signal it, if it has a signal system setup
-            # Find the container nr and then signal
-            local container2=
-            for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
-                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
-                if [ "${container}" = "${container2}" ]; then
-                    _SIGNAL_CONTAINER "${container}" "${container_nr}"
-                    break
-                fi
-            done
-        fi
+        local container2=
+        for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+            _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
+            if [ "${container}" = "${container2}" ]; then
+                _SIGNAL_CONTAINER "${container}" "${container_nr}"
+                break
+            fi
+        done
     done
 }
 
-# If pod is running it and all containers will be stopped.
-# Make sure the pod and containers are removed, volumes are not removed.
-# Create pod and all containers and start it all up.
-_RERUN()
-{
-    SPACE_SIGNATURE="[containers]"
-    SPACE_DEP="PRINT _GET_CONTAINER_VAR _CYCLE_CONTAINER _STOP_POD _DESTROY_POD _RUN _POD_EXISTS"
-
-    if [ "$#" -gt 0 ]; then
-        if ! _POD_EXISTS; then
-            PRINT "Pod does not exist" "error" 0
-            return 1
-        fi
-
-        local containerNames=""
-        local container=
-        local container_nr=
-        for container in "$@"; do
-            container="${container}-${POD}"
-            local container2=
-            for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
-                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
-                if [ "${container}" = "${container2}" ]; then
-                    PRINT "Cycle container ${container}" "info" 0
-                    _CYCLE_CONTAINER "${container}" "${container_nr}"
-                    continue 2
-                fi
-            done
-            PRINT "Container ${container} does not exist in this pod" "error" 0
-        done
-    else
-        # Rerun the whole pod
-        if _POD_EXISTS; then
-            _STOP_POD
-            _DESTROY_POD
-        fi
-        _RUN
-    fi
-}
-
-# Whenever a config on disk has changed
-# we call this function to notify containers who mount the particular config.
-_RELOAD_CONFIG()
+# CLI COMMAND
+_RELOAD_CONFIGS()
 {
     SPACE_SIGNATURE="configs"
-    SPACE_DEP="_POD_EXISTS _POD_STATUS PRINT _GET_CONTAINER_VAR _CONTAINER_EXISTS _CONTAINER_EXISTS _CYCLE_CONTAINER _CONTAINER_STATUS STRING_ITEM_INDEXOF"
+    SPACE_DEP="_RELOAD_CONFIGS2 _POD_EXISTS _POD_STATUS PRINT"
 
     if ! _POD_EXISTS; then
         PRINT "Pod ${POD} does not exist" "error" 0
@@ -1326,6 +1865,16 @@ _RELOAD_CONFIG()
     fi
 
     PRINT "Cycle/signal containers who mount the configs $*" "info" 0
+
+    _RELOAD_CONFIGS2 "$@"
+}
+
+# Is automatically called whenever a config on disk has changed
+# we call this function to notify containers who mount the particular config.
+_RELOAD_CONFIGS2()
+{
+    SPACE_SIGNATURE="configs"
+    SPACE_DEP="PRINT _GET_CONTAINER_VAR _CONTAINER_EXISTS _CONTAINER_EXISTS _CYCLE_CONTAINER _CONTAINER_STATUS STRING_ITEM_INDEXOF"
 
     local config=
     local containersdone=""
@@ -1345,21 +1894,8 @@ _RELOAD_CONFIG()
             if STRING_ITEM_INDEXOF "${usedconfigs}" "${config}"; then
                 containersdone="${containersdone} ${container_nr}"
                 PRINT "Container ${container} mounts config ${config}" "info" 0
-                if _CONTAINER_EXISTS "${container}" && [ "$(_CONTAINER_STATUS "${container}")" = "running" ]; then
-                    # If the container is running then signal it, if it has a signal system setup
-                    _SIGNAL_CONTAINER "${container}" "${container_nr}"
-                else
-                    # If container is not running, cycle it as long as its restart policy allows
-                    local restartpolicy=
-                    _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restartpolicy"
-                    # Restart on always, on-config and on-interval:x
-                    # Do not restart on never or on-failure
-                    if [ "${restartpolicy}" = "always" ] || [ "${restartpolicy}" = "on-config" ] || [ "${restartpolicy%:*}" = "on-interval" ]; then
-                        _CYCLE_CONTAINER "${container}" "${container_nr}"
-                    else
-                        PRINT "Container ${container} is not restarted due to its restart policy" "info" 0
-                    fi
-                fi
+                # Signal or potentially restart container (depending on restart policy).
+                _SIGNAL_CONTAINER "${container}" "${container_nr}"
             fi
         done
     done
@@ -1370,12 +1906,15 @@ _RELOAD_CONFIG()
 # Do not remove configs, because those are not created by this runtime and we cannot be sure it is ok to delete them.
 _PURGE()
 {
-    SPACE_DEP="_DESTROY_POD _DESTROY_VOLUMES _POD_EXISTS PRINT"
+    SPACE_DEP="_DESTROY_VOLUMES _POD_EXISTS PRINT _RM"
 
     if _POD_EXISTS; then
         PRINT "Pod ${POD} exists. Remove it before purging" "error" 0
         return 1
     fi
+
+    # Make sure all containers are removed
+    _RM
 
     _DESTROY_VOLUMES
 }
@@ -1456,6 +1995,9 @@ _RUN_PROBE()
 }
 
 # Check if the pod is ready to receive traffic.
+# Run the readiness probe on the containers who has one defined.
+# An exit code of 0 means the readiness fared well and all applicable containers are ready to receive traffic.
+# The readiness probe is defined in the YAML describing each container.
 _READINESS_PROBE()
 {
     SPACE_DEP="_RUN_PROBE _CONTAINER_STATUS PRINT _POD_EXISTS _POD_STATUS"
@@ -1496,8 +2038,10 @@ _READINESS_PROBE()
     done
 }
 
-# Check each container it is healthy, if not stop the container.
-# The container will restart according to it's restart-policy.
+# Run the liveness probe on the containers which have liveness probes defined.
+# If the probe fails on a container the container will be stopped and then subject to its restart policy.
+# An exit code of 1 means that at least one container was found in a bad state and stopped.
+# The liveness probe is defined in the YAML describing each container.
 _LIVENESS_PROBE()
 {
     SPACE_DEP="_RUN_PROBE _CONTAINER_STATUS PRINT _CONTAINER_STOP"
@@ -1525,15 +2069,6 @@ _LIVENESS_PROBE()
             fi
         fi
     done
-}
-
-# Output the ramdisks configuration for this pod's containers.
-# This is used by the daemon to create ramdisks.
-# It is also used by this executable to create fake ramdisks unless the daemon provided them.
-_RAMDISK_CONFIG()
-{
-    #SPACE_ENV="POD_RAMDISKS"
-    printf "%s\\n" "${POD_RAMDISKS}"
 }
 
 _CHECK_PODMAN()
@@ -1665,7 +2200,7 @@ _GETOPTS()
 POD_ENTRY()
 {
     SPACE_SIGNATURE="action [args]"
-    SPACE_DEP="_VERSION _SHOW_USAGE _CREATE _RUN _PURGE _RELOAD_CONFIG _RM _RERUN _SIGNAL _LOGS _STOP _START _KILL _CREATE_VOLUMES _DOWNLOAD _SHOW_INFO _SHOW_STATUS _READINESS_PROBE _LIVENESS_PROBE _RAMDISK_CONFIG _CHECK_PODMAN _GET_CONTAINER_VAR _GETOPTS _SHELL"
+    SPACE_DEP="_VERSION _SHOW_USAGE _CREATE _CREATE_FORK _RUN _PURGE _RELOAD_CONFIGS _RM _RERUN _SIGNAL _LOGS _STOP _START _KILL _CREATE_RAMDISKS _CREATE_VOLUMES _DOWNLOAD _SHOW_INFO _SHOW_STATUS _CHECK_PODMAN _GET_CONTAINER_VAR _GETOPTS _SHELL"
 
     # This is for display purposes only and shows the runtime type and the version of the runtime impl.
     local RUNTIME_VERSION="podman 0.1"
@@ -1692,6 +2227,12 @@ POD_ENTRY()
         cd "${POD_DIR}"
     fi
 
+    # Absolute path to the pod executable. The status functions use this to reference the pod.status file.
+    local POD_FILE="${POD_DIR}/${0##*/}"
+
+    local POD_LOG_DIR="${POD_DIR}/log"
+    mkdir -p "${POD_LOG_DIR}"
+
     local action="${1:-help}"
     shift $(($# > 0 ? 1 : 0))
 
@@ -1701,8 +2242,6 @@ POD_ENTRY()
         _VERSION
     elif [ "${action}" = "info" ]; then
         _SHOW_INFO
-    elif [ "${action}" = "ramdisk-config" ]; then
-        _RAMDISK_CONFIG
     else
         # Commands below all need podman, so we check the version first.
         if ! _CHECK_PODMAN; then
@@ -1721,6 +2260,9 @@ POD_ENTRY()
             _DOWNLOAD "${_out_f}"
         elif [ "${action}" = "create" ]; then
             _CREATE
+        elif [ "${action}" = "porcelain-create" ]; then
+            # Undocumented internal method used to fork
+            _CREATE_FORK
         elif [ "${action}" = "start" ]; then
             _START
         elif [ "${action}" = "stop" ]; then
@@ -1730,24 +2272,45 @@ POD_ENTRY()
         elif [ "${action}" = "run" ]; then
             _RUN
         elif [ "${action}" = "rerun" ]; then
-            _RERUN "$@"
+            local _out_rest=
+            local _out_k="false"
+
+            if ! _GETOPTS "k" "" 0 999 "$@"; then
+                printf "Usage: pod rerun [-k] [containers]\\n" >&2
+                return 1
+            fi
+            if [ -n "${_out_rest}" ] && [ "${_out_k}" = "true" ]; then
+                printf "Error: -k switch not valid when providing containers. Only the pod as a whole can be killed\\nUsage: pod rerun [-k] [containers]\\n" >&2
+                return 1
+            fi
+            set -- ${_out_rest}
+            _RERUN "${_out_k}" "$@"
         elif [ "${action}" = "signal" ]; then
             _SIGNAL "$@"
         elif [ "${action}" = "logs" ]; then
             local _out_rest=
+            local _out_p="false"
             local _out_t=
             local _out_s=
             local _out_l=
             local _out_d=
 
-            if ! _GETOPTS "" "t s l d" 0 999 "$@"; then
-                printf "Usage: pod logs [container] [-t timestamp] [-l limit] [-s streams] [-d details]\\n" >&2
+            if ! _GETOPTS "p" "t s l d" 0 999 "$@"; then
+                printf "Usage: pod logs [containers] [-p] [-t timestamp] [-l limit] [-s streams] [-d details]\\n" >&2
                 return 1
             fi
             set -- ${_out_rest}
-            _LOGS "${_out_t}" "${_out_l}" "${_out_s}" "${_out_d}" "$@"
+            _LOGS "${_out_t}" "${_out_l}" "${_out_s}" "${_out_d}" "${_out_p}" "$@"
         elif [ "${action}" = "create-volumes" ]; then
             _CREATE_VOLUMES
+        elif [ "${action}" = "create-ramdisks" ]; then
+            local _out_d="false"
+            local _out_l="false"
+            if ! _GETOPTS "d l" "" 0 0 "$@"; then
+                printf "Usage: pod create-ramdisks [-l] [-d ]\\n" >&2
+                return 1
+            fi
+            _CREATE_RAMDISKS "${_out_d}" "${_out_l}"
         elif [ "${action}" = "reload-configs" ]; then
             local _out_rest=
             if ! _GETOPTS "" "" 1 999 "$@"; then
@@ -1755,15 +2318,17 @@ POD_ENTRY()
                 return 1
             fi
             set -- ${_out_rest}
-            _RELOAD_CONFIG "$@"
+            _RELOAD_CONFIGS "$@"
         elif [ "${action}" = "rm" ]; then
-            _RM
+            local _out_k="false"
+
+            if ! _GETOPTS "k" "" 0 0 "$@"; then
+                printf "Usage: pod rm [-k]\\n" >&2
+                return 1
+            fi
+            _RM "${_out_k}"
         elif [ "${action}" = "purge" ]; then
             _PURGE
-        elif [ "${action}" = "readiness" ]; then
-            _READINESS_PROBE
-        elif [ "${action}" = "liveness" ]; then
-            _LIVENESS_PROBE
         elif [ "${action}" = "shell" ]; then
             local _out_B="false"
 
