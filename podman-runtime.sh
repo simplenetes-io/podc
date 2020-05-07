@@ -318,6 +318,7 @@ _CREATE_POD()
     local pid="${1}"
     shift
 
+    # TODO: make ps work with busybox
     local starttime=
     if ! starttime="$(ps --no-headers -p "${pid}" -o lstart)"; then
         PRINT "Cannot get ps --no-headers -p "${pid}" -o lstart" "error" 0
@@ -351,6 +352,7 @@ _POD_PID()
     local pid="${label%%-*}"
     local starttime="${label#*-}"
 
+    # TODO: make ps work with busybox
     local starttime2=
     if ! starttime2="$(ps --no-headers -p "${pid}" -o lstart)"; then
         return 1
@@ -962,8 +964,9 @@ _SHOW_USAGE()
 
     status
         Output current runtime status for this pod.
-        This function outputs the \"pod.status\" file if it exists and the daemon process exists.
-        Otherwise status outputted is \"unknown\".
+        This function outputs the \"pod.status\" file if it exists and the daemon process exists,
+        otherwise status outputted is \"unknown\" if the daemon process does not exist.
+        If the status file is not existing the pod is assumed to not exist and the output is \"non-existing\".
 
     download [-f]
         Perform pull on images for all containers.
@@ -1078,9 +1081,9 @@ _SHOW_STATUS()
 
     local statusFile="${POD_FILE}.status"
 
-    if [ ! "${statusFile}" ]; then
+    if [ ! -f "${statusFile}" ]; then
         printf "%s\\n" "pod: ${POD}
-status: unknown"
+status: non-existing"
         return
     fi
 
@@ -1391,6 +1394,7 @@ _WRITE_STATUS_FILE()
     local contents="pod: ${POD}
 created: ${created}
 started: ${started}
+updated: ${updated}
 status: ${status}
 pid: ${pid}
 readiness: ${readiness}
@@ -1718,30 +1722,33 @@ _LOGS()
     if [ "${podLogs}" = "true" ]; then
         # The daemon process logs
         containers="${POD}"
-    else
-        local container_nr=
-        if [ "$#" -eq 0 ]; then
+    fi
+    if [ "$#" -eq 0 ]; then
+        # Only get for all containers if not pod logs were requested.
+        if [ "${podLogs}" != "true" ]; then
             # Get all containers
+            local container_nr=
             for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
                 _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
                 containers="${containers} ${container}"
             done
-        else
-            local container=
-            for container in "$@"; do
-                container="${container}-${POD}"
-                for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
-                    local container2=
-                    _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
-                    if [ "${container2}" = "${container}" ]; then
-                        containers="${containers} ${container}"
-                        continue 2
-                    fi
-                done
-                PRINT "Container ${container} does not exist in this pod" "error" 0
-                return 1
-            done
         fi
+    else
+        local container=
+        for container in "$@"; do
+            container="${container}-${POD}"
+            local container_nr=
+            for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+                local container2=
+                _GET_CONTAINER_VAR "${container_nr}" "NAME" "container2"
+                if [ "${container2}" = "${container}" ]; then
+                    containers="${containers} ${container}"
+                    continue 2
+                fi
+            done
+            PRINT "Container ${container} does not exist in this pod" "error" 0
+            return 1
+        done
     fi
 
     # For each container, check if there are logfiles for the streams chosen,
@@ -1751,15 +1758,15 @@ _LOGS()
         local stream=
         for stream in ${streams}; do
             # Check current file
-            local file="${container}-${stream}.log"
-            if [ -f "${file}" ]; then
-                files="${files} ${file}"
+            local filePath="${POD_LOG_DIR}/${container}-${stream}.log"
+            if [ -f "${filePath}" ]; then
+                files="${files} ${filePath}"
             fi
             # Check older files
-            for file in $(find . -maxdepth 1 -name "${container}-${stream}.log.*" |cut -b3-); do
+            for filePath in $(find . -maxdepth 1 -wholename "${POD_LOG_DIR}/${container}-${stream}.log.*" |cut -b3-); do
                 local ts="${file##*.}"
                 if [ "${timestamp}" -le "${ts}" ]; then
-                    files="${files} ${file}"
+                    files="${files} ${filePath}"
                 fi
             done
         done
@@ -1768,12 +1775,17 @@ _LOGS()
     # For all applicable files, filter each line on timestamp and prepend with container
     # name and stream name.
     # Cat all files together, with prefixes, filter out on time, Sort on time
-    local file=
-    for file in ${files}; do
-        local container="${file%%-${POD}*}"
-        local stream="${file%%.log*}"
+    local filePath=
+    for filePath in ${files}; do
+        local file="${filePath##*/}"
+        local container="${file%-${POD}*}"
+        if [ "${container}" = "${file}" ]; then
+            # This happens for the pod
+            container="<pod>"
+        fi
+        local stream="${file%.log*}"
         stream="${stream##*-}"
-        awk '{if ($1 >= '"${timestamp}"') {print "'"${container}"' '"${stream}"' " $0}}' "${file}"
+        awk '{if ($1 >= '"${timestamp}"') {print "'"${container}"' '"${stream}"' " $0}}' "${filePath}"
     done |sort -k3,3n -k4,4n |
         {
             if [ "${limit}" = 0 ]; then
