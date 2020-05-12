@@ -188,8 +188,9 @@ _SHOW_USAGE()
 
     status
         Output current runtime status for this pod.
-        This function outputs the \"pod.status\" file if it exists and the daemon process exists.
-        Otherwise status outputted is \"unknown\".
+        This function outputs the \"pod.status\" file if it exists and the daemon process exists,
+        otherwise status outputted is \"unknown\" if the daemon process does not exist.
+        If the status file is not existing the pod is assumed to not exist and the output is \"non-existing\".
 
     download [-f]
         Perform pull on images for all containers.
@@ -230,14 +231,16 @@ _SHOW_USAGE()
         The signal sent is the SIG defined in the containers YAML specification.
         Invoking without arguments will invoke signals all all containers which have a SIG defined.
 
-    logs [containers] [-p] [-t timestamp] [-s streams] [-l limit] [-d details]
-        Output logs for one, many or all containers. If none given then show for all.
-        -p Show pod daemon process logs (if set will not show any container logs)
+    logs [containers] [-p] [-t timestamp] [-l limit] [-s streams] [-d details]
+        Output logs for one, many or all [containers]. If none given then show for all.
+        -p Show pod daemon process logs (can also be used in combination with [containers])
         -t timestamp=UNIX timestamp to get logs from, defaults to 0
+           If negative value is given it is seconds relative to now (now-ts).
         -s streams=[stdout|stderr|stdout,stderr], defaults to \"stdout,stderr\".
         -l limit=nr of lines to get in total from the top, negative gets from the bottom (latest).
         -d details=[ts|name|stream|none], comma separated if many.
-            if \"ts\" set will show the UNIX timestamp for each row,
+            if \"ts\" set will show the UNIX timestamp for each row.
+            if \"age\" set will show age as seconds for each row.
             if \"name\" is set will show the container name for each row.
             if \"stream\" is set will show the std stream the logs came on.
             To not show any details set to \"none\".
@@ -538,16 +541,22 @@ _LOGS()
     local details="${1:-ts,name}"
     shift
 
-    local podLogs="${1:-false}"
+    local showProcessLog="${1:-false}"
     shift
 
     STRING_SUBST "streams" ',' ' ' 1
     STRING_SUBST "details" ',' ' ' 1
 
 
-    if ! STRING_IS_NUMBER "${timestamp}"; then
-        PRINT "timeout must be a positive number (seconds since epoch)" "error" 0
+    if ! STRING_IS_NUMBER "${timestamp}" "1"; then
+        PRINT "timeout must be number (positive is seconds since epoch, negative is age as seconds from now)" "error" 0
         return 1
+    fi
+
+    # Check if time is given as relative age
+    # and transform it to UNIX time.
+    if [ "${timestamp#-}" != "${timestamp}" ]; then
+        timestamp=$(($(date +%s)+${timestamp}))
     fi
 
     if ! STRING_IS_NUMBER "${limit}" 1; then
@@ -556,13 +565,13 @@ _LOGS()
     fi
 
     local containers=""
-    if [ "${podLogs}" = "true" ]; then
+    if [ "${showProcessLog}" = "true" ]; then
         # The daemon process logs
         containers="${POD}"
     fi
     if [ "$#" -eq 0 ]; then
         # Only get for all containers if not pod logs were requested.
-        if [ "${podLogs}" != "true" ]; then
+        if [ "${showProcessLog}" != "true" ]; then
             # Get all containers
             local container_nr=
             for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
@@ -609,6 +618,25 @@ _LOGS()
         done
     done
 
+    local columns=""
+    local detail=
+    for detail in ${details}; do
+        local arg=""
+        if [ "${detail}" = "ts" ]; then
+            arg='\4'
+        elif [ "${detail}" = "name" ]; then
+            arg='\1'
+        elif [ "${detail}" = "stream" ]; then
+            arg='\2'
+        elif [ "${detail}" = "age" ]; then
+            arg='\3'
+        fi
+        columns="${columns}${columns:+ }${arg}"
+    done
+    columns="${columns}${columns:+ }\\6"
+
+    local now="$(date +%s)"
+
     # For all applicable files, filter each line on timestamp and prepend with container
     # name and stream name.
     # Cat all files together, with prefixes, filter out on time, Sort on time
@@ -622,8 +650,9 @@ _LOGS()
         fi
         local stream="${file%.log*}"
         stream="${stream##*-}"
-        awk '{if ($1 >= '"${timestamp}"') {print "'"${container}"' '"${stream}"' " $0}}' "${filePath}"
-    done |sort -k3,3n -k4,4n |
+        # Columns: container stream age timestamp index rest-of-line
+        awk '{if ($1 >= '"${timestamp}"') {age='"${now}"'-$1; print "'"${container}"' '"${stream}"' " age " " $0}}' "${filePath}"
+    done |sort -k4,4n -k5,5n |
         {
             if [ "${limit}" = 0 ]; then
                 :
@@ -637,21 +666,8 @@ _LOGS()
             fi
         } |
         {
-            local columns=""
-            local detail=
-            for detail in ${details}; do
-                local arg=""
-                if [ "${detail}" = "ts" ]; then
-                    arg='\3'
-                elif [ "${detail}" = "name" ]; then
-                    arg='\1'
-                elif [ "${detail}" = "stream" ]; then
-                    arg='\2'
-                fi
-                columns="${columns}${columns:+ }${arg}"
-            done
-            columns="${columns}${columns:+ }\\5"
-            sed "s/\\([^ ]\+\\) \\([^ ]\\+\\) \\([^ ]\\+\\) \\([^ ]\\+\\) \\(.*\\)/${columns}/"
+            # Only show the relevant columns
+            sed "s/\\([^ ]\+\\) \\([^ ]\\+\\) \\([^ ]\\+\\) \\([^ ]\\+\\) \\([^ ]\\+\\) \\(.*\\)/${columns}/"
         }
 }
 
