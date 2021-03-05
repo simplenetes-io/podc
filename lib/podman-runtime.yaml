@@ -1,4 +1,4 @@
-@clone: string network file
+@clone: string:1.4.0 network:2.0.0 file:1.6.0
 podman:
     _info:
         title: Pod runtime to run and manage a podman pod

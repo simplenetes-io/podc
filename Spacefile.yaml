@@ -1,4 +1,4 @@
-@clone: yaml string text file
+@clone: yaml:1.0.2 string:1.4.0 text:1.1.1 file:1.6.0
 
 compile:
     _info:
