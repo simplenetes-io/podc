@@ -4,7 +4,7 @@
 #    / __/ _ \/ _ |/ ___/ __/ / __/ // /
 #   _\ \/ ___/ __ / /__/ _/_ _\ \/ _  /
 #  /___/_/  /_/ |_\___/___(_)___/_//_/
-#  version: 1.3.0 | https://space.sh
+#  version: 1.4.0 | https://space.sh
 #
 # Node: /podman/
 # Pod runtime to run and manage a podman pod
@@ -49,7 +49,6 @@ POD_ENTRY()
     local POD_FILE="${POD_DIR}/${0##*/}"
 
     local POD_LOG_DIR="${POD_DIR}/log"
-    mkdir -p "${POD_LOG_DIR}"
 
     local action="${1:-help}"
     shift $(($# > 0 ? 1 : 0))
@@ -65,6 +64,8 @@ POD_ENTRY()
         if ! _CHECK_PODMAN; then
             return 1
         fi
+
+        mkdir -p "${POD_LOG_DIR}"
 
         if [ "${action}" = "status" ]; then
             _SHOW_STATUS
@@ -258,8 +259,7 @@ _SHOW_USAGE()
         If ramdisks are not prepared prior to the pod starting up then the pod will it self
         create regular directories (fake ramdisks) instead of real ramdisks. This is a fallback
         strategy in the case sudo/root priviligies are not available or if just running in dev mode.
-        For applications where the security of ramdisks are important then ramdisks
-        should be properly created.
+        For applications where the security of ramdisks are important then ramdisks should be properly created.
 
     reload-configs config1 [config2 config3 etc]
         When a \"config\" has been updated on disk, this command is automatically invoked to signal the container who mount the specific config(s).
@@ -315,7 +315,7 @@ _CREATE()
         return 1
     fi
 
-    # Create the daemon process
+    # Create the daemon process, in a new session (setsid)
     local pid=
     if ! pid="$(setsid $0 porcelain-create)"; then
         PRINT "Could not create daemon process" "error" 0
@@ -469,7 +469,7 @@ _RERUN()
                     # Real time signals start at index 34 and end at 64.
                     local restartIndex="$((33+container_nr))"
                     if [ "${restartIndex}" -gt 64 ]; then
-                        PRINT "Cannot restart container ${container} because we are out of signals. You have to many containers in the pod. Try to rearrange containers you want to restart to be earlier in the list" "error" 0
+                        PRINT "Cannot restart container ${container} because we are out of signals. You have too many containers in the pod. Try to rearrange containers you want to restart to be earlier in the list" "error" 0
                         continue 2
                     fi
                     PRINT "Cycle container ${container}" "info" 0
@@ -903,6 +903,7 @@ status: non-existing"
     contents="$(cat "${statusFile}")"
 
     # Check so that PID still exists
+    # TODO: we should ues _POD_PID to be sure the pid is valid, right?
     local pid="$(printf "%s\\n" "${contents}" |grep "pid:")"
     pid="${pid#*:}"
     STRING_TRIM "pid"
@@ -936,9 +937,6 @@ _CHECK_PODMAN()
         PRINT "Podman 1.8.0 is not supported" "error" 0
         return 1
     fi
-
-    return 0
-    # Disabled for now since CentOS currently is on podman 1.6.4
 
     if [ "${major}" -gt 1 ]; then
         return 0
@@ -1962,7 +1960,7 @@ NETWORK_PORT_FREE()
 
     # Try sockstat first
     if command -v sockstat >/dev/null 2>&1; then
-        sockstat 2>/dev/null |awk '{print $6}' |grep -q ":${port}\>"
+        sockstat 2>/dev/null | awk '{print $6}' | grep -q ":${port}\>"
         return
     fi
 
@@ -1971,7 +1969,7 @@ NETWORK_PORT_FREE()
         return 1
     fi
 
-    if netstat -tulpn 2>/dev/null |grep "LISTEN" |awk '{print $4}' |grep -q ":${port}\>"; then
+    if netstat -tulpn 2>/dev/null | grep "LISTEN" | awk '{print $4}' | grep -q ":${port}\>"; then
         return 1
     fi
 }
@@ -2606,7 +2604,7 @@ FILE_DIR_CHECKSUM()
         return 1
     fi
 
-    (cd "${dir}" && ls -lAR "." |${_SHASUMBIN} |cut -f 1 -d' ')
+    (cd "${dir}" && ls -lAR "." | ${_SHASUMBIN} | cut -f 1 -d' ')
 }
 
 STRING_ITEM_GET()
@@ -2681,7 +2679,7 @@ NETWORK_LOCAL_IP()
     local interface="${1:-}"
 
     # shellcheck disable=2086
-    ifconfig ${interface:-} |grep -o "inet .*" |cut -d' ' -f 2 |grep ".*[.].*[.].*[.]1$" -v |sort |tail -n1
+    ifconfig ${interface:-} | grep -o "inet .*" | cut -d' ' -f 2 | grep ".*[.].*[.].*[.]1$" -v | sort | tail -n1
 }
 
 _SET_CONTAINER_VAR()
