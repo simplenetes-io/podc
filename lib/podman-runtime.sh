@@ -340,7 +340,7 @@ _CREATE_POD()
     fi
 }
 
-# Get the pod pid and check so that it is valid (it is not after a reboot).
+# Get the pod pid and check so that it is valid (it is not valid after a reboot).
 _POD_PID()
 {
 
@@ -811,7 +811,7 @@ _RUN_CONTAINER()
 }
 
 # Read on STDIN and write to "file",
-# when file grows over "waxFileSize" "file" is rotated out
+# when file grows over "maxFileSize" "file" is rotated out
 # and a new "file" is created.
 _LOG_FILE()
 {
@@ -1034,8 +1034,7 @@ _SHOW_USAGE()
         If ramdisks are not prepared prior to the pod starting up then the pod will it self
         create regular directories (fake ramdisks) instead of real ramdisks. This is a fallback
         strategy in the case sudo/root priviligies are not available or if just running in dev mode.
-        For applications where the security of ramdisks are important then ramdisks
-        should be properly created.
+        For applications where the security of ramdisks are important then ramdisks should be properly created.
 
     reload-configs config1 [config2 config3 etc]
         When a \"config\" has been updated on disk, this command is automatically invoked to signal the container who mount the specific config(s).
@@ -1094,6 +1093,7 @@ status: non-existing"
     contents="$(cat "${statusFile}")"
 
     # Check so that PID still exists
+    # TODO: we should ues _POD_PID to be sure the pid is valid, right?
     local pid="$(printf "%s\\n" "${contents}" |grep "pid:")"
     pid="${pid#*:}"
     STRING_TRIM "pid"
@@ -1154,7 +1154,7 @@ _CREATE()
         return 1
     fi
 
-    # Create the daemon process
+    # Create the daemon process, in a new session (setsid)
     local pid=
     if ! pid="$(setsid $0 porcelain-create)"; then
         PRINT "Could not create daemon process" "error" 0
@@ -1531,7 +1531,7 @@ _RERUN()
                     # Real time signals start at index 34 and end at 64.
                     local restartIndex="$((33+container_nr))"
                     if [ "${restartIndex}" -gt 64 ]; then
-                        PRINT "Cannot restart container ${container} because we are out of signals. You have to many containers in the pod. Try to rearrange containers you want to restart to be earlier in the list" "error" 0
+                        PRINT "Cannot restart container ${container} because we are out of signals. You have too many containers in the pod. Try to rearrange containers you want to restart to be earlier in the list" "error" 0
                         continue 2
                     fi
                     PRINT "Cycle container ${container}" "info" 0
@@ -1977,7 +1977,7 @@ _SHELL()
 }
 
 # Exec a command inside a container, repeatedly if not getting exit code 0.
-# Sleep 1 second between each exec and timeout eventually (killing the command if necessary.
+# Sleep 1 second between each exec and timeout eventually (killing the command if necessary).
 _RUN_PROBE()
 {
     SPACE_SIGNATURE="container command timeout"
@@ -2121,9 +2121,6 @@ _CHECK_PODMAN()
         return 1
     fi
 
-    return 0
-    # Disabled for now since CentOS currently is on podman 1.6.4
-
     if [ "${major}" -gt 1 ]; then
         return 0
     fi
@@ -2258,7 +2255,6 @@ POD_ENTRY()
     local POD_FILE="${POD_DIR}/${0##*/}"
 
     local POD_LOG_DIR="${POD_DIR}/log"
-    mkdir -p "${POD_LOG_DIR}"
 
     local action="${1:-help}"
     shift $(($# > 0 ? 1 : 0))
@@ -2274,6 +2270,8 @@ POD_ENTRY()
         if ! _CHECK_PODMAN; then
             return 1
         fi
+
+        mkdir -p "${POD_LOG_DIR}"
 
         if [ "${action}" = "status" ]; then
             _SHOW_STATUS

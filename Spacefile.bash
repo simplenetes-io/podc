@@ -136,7 +136,7 @@ USAGE()
             optional path where to write the executable pod file.
             Default is \"pod\" in the same directory as the pod yaml file.
 
-        -p true|false (default false)
+        -p true|false (default true)
             optional flag do perform preprocessing on the pod.yaml file or not.
 
         -d srcdir
@@ -167,7 +167,7 @@ COMPILE_ENTRY()
     local srcDir="${1:-}"
     shift $(($# > 0 ? 1 : 0))
 
-    local doPP="${1:-true}"
+    local doPreprocessing="${1:-true}"
     shift $(($# > 0 ? 1 : 0))
 
     if [ -z "${podName}" ]; then
@@ -199,7 +199,7 @@ COMPILE_ENTRY()
 
     local filename="${inFile##*/}"
     local yamlfile=
-    if [ "${doPP}" = "true" ]; then
+    if [ "${doPreprocessing}" = "true" ]; then
         yamlfile="${buildDir}/.${filename}"
         local text="$(cat "${inFile}")"
         local variablestosubst="$(TEXT_EXTRACT_VARIABLES "${text}")"
@@ -223,9 +223,9 @@ COMPILE_ENTRY()
             fi
         done
         if [ -n "${varnames}" ]; then
-            PRINT "Add values from environment for varibles: ${varnames}" "info" 0
+            PRINT "Sourcing variables from environment since they are not defined in .env file, for variables: ${varnames}" "info" 0
             if ! values="${values}${values:+${newline}}$(TEXT_GET_ENV "${varnames}" "1")"; then
-                PRINT "There are missing variables in env file or environment." "warning" 0
+                PRINT "There are missing variables in .env file or environment." "warning" 0
             fi
         fi
 
@@ -347,9 +347,9 @@ _COMPILE_POD()
         printf "%s\\n" "${_out_pod}" >"${outFile}"
         chmod +x "${outFile}"
         if [ -n "${POD_PROXYCONF}" ]; then
-            printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
+            printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.portmappings.conf"
         else
-            rm -f "${outFile}.proxy.conf"
+            rm -f "${outFile}.portmappings.conf"
         fi
         if [ -n "${POD_INGRESSCONF}" ]; then
             printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
@@ -408,9 +408,9 @@ _COMPILE_PROCESS()
     fi
 
     if [ -n "${POD_PROXYCONF}" ]; then
-        printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.proxy.conf"
+        printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.portmappings.conf"
     else
-        rm -f "${outFile}.proxy.conf"
+        rm -f "${outFile}.portmappings.conf"
     fi
     if [ -n "${POD_INGRESSCONF}" ]; then
         printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
@@ -534,6 +534,7 @@ _COMPILE_PODMAN()
         elif [ "${type}" = "host" ]; then
             volumes_host="${volumes_host} ${volume}"
             bind="$(FILE_REALPATH "${bind}" "${srcDir}")"
+            PRINT "${bind}"
             volumes_host_bind="${volumes_host_bind} ${bind}"
         fi
 
