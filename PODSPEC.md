@@ -48,6 +48,8 @@ The config dirs in a pod repo can be `imported` into the cluster project and fro
 Underscore prefixed dirs are copied to the cluster project but are then not copied to pod releases nor synced to hosts in cluster.
 Such underscores configs are used as templates for the cluster projects, such as the `ingress pod's` templates `(_tpl/)` for haproxy configuration snippets.
 
+Note that only directories in the pod config directory are after import copied to pod releases, any files in the root config directory will never be part of a release.
+
 ## Ramdisks
 If a pod is leveraging ramdisks (for sensitive data) those must be created by root before creating the pod.
 You can call `sudo pod create-ramdisks` to have the ramdisks created and `sudo pod create-ramdisks -d` to have them deleted.
@@ -123,7 +125,7 @@ There are a couple of different types of Pods supported so far in Simplenetes.
         These are single executables which conform to the Pod API.
 
 Very important to note is the `podc` yaml interpretor has a few restrictions compared to other yaml
-processors (because it is implemented in Bash). The most notable is that lists *must be intended*.
+processors (because it is implemented in Bash). The most notable is that lists *must be indented*.
 This will NOT work:  
 ```yaml
 parent:
@@ -412,7 +414,7 @@ containers:
                 # Match on path endings, can be used together with pathBeg.
                 pathEnd: .jpg .gif
 
-                # Match on full path, not include query parameters. Exlusice to pathBeg and pathEnd.
+                # Match on full path, not include query parameters. Exlusive to pathBeg and pathEnd.
                 path: /admin/ /superuser/
 
                 # A heavier weight makes this match earlier in the Ingress. Default is 100.
@@ -521,11 +523,12 @@ Will show configuration and setup for the pod, not current status.
 Will show up to date runtime status about the pod and containers.
 
 ```sh
-./pod download
+./pod download [-f]
 # return 0 on success
 # return 1 on error
 ```
 For a container pod this means to pull all images.  
+If -f option is set then always pull for updated images, even if they already exist locally.  
 
 For an executable pod it could mean to download and install packages needed to run the service.
 
@@ -577,13 +580,27 @@ For container pods this command makes sure all containers are in the running sta
 For executables they need to understand if their process is already running and not start another one else start the process and keep the PID somewhere.
 
 ```sh
-./pod rerun
+./pod rerun [-k] [container1 container2 etc]
 # return 0 on success
 # return 1 on error
 ```
-For container pods, first stop, then remove and then restart all containers.
+For container pods, first stop, then remove and then restart all containers.  
+Same effect as issuing rm and run in sequence.  
+If container name(s) are provided then only cycle the containers, not the full pod.  
+If -k flag is set then pod will be killed instead of stopped (not valid when defining individual containers).
 
 For executables, stop the current process and start a new one.
+
+```sh
+./pod signal [container1 container2 etc]
+# return 0 on success
+# return 1 on error
+```
+Send a signal to one, many or all containers.  
+The signal sent is the SIG defined in the containers YAML specification.  
+Invoking without arguments will invoke signals all all containers which have a SIG defined.
+
+For executables, signal the process.
 
 ```sh
 ./pod create-volumes
@@ -595,7 +612,10 @@ For a containers pod create all volumes used by this pod.
 For an executable pod it can mean something similiar such as provisioning storage space.
 
 ```sh
-./pod reload-configs config1[ config2, etc]
+./pod reload-configs config1 [config2 config3 etc]
+    When a "config" has been updated on disk, this command is automatically invoked to signal the container who mount the specific config(s).
+    It can also be manually run from command line to trigger a config reload.
+    Each container mounting the config will be signalled as defined in the YAML specification.
 # return 0 if successful
 # return 1 if pod does not exist or if pod is not running.
 ```
@@ -604,10 +624,12 @@ For containers pods this means that containers who mount the configs will be not
 For executable pods it becomes implementation specific what it means.
 
 ```sh
-./pod rm
+./pod rm [-k]
 # return 0 if successful
 ```
-For container pods stop and destroy all pods, leave volumes intact.
+For container pods stop and destroy all pods, leave volumes intact.  
+If the pod and containers are running they will be stopped first and then removed.  
+If -k flag is set then containers will be killed instead of stopped.
 
 For executable pods clean up any lingering files which are temporary.
 
@@ -620,9 +642,18 @@ For container pods which are non existing, remove all volumes associated.
 For executable pods remove all traces of activity, such as log files.
 
 ```sh
-./pod create-ramdisks
+./pod create-ramdisks [-l] [-d]
+        If run as sudo/root create the ramdisks used by this pod.
+        If -d flag is set then delete existing ramdisks, requires sudo/root.
+        If -l flag is provided list ramdisks configuration (used by external tools to provide the ramdisks, for example the Simpleneted Daemon `sntd`).
+        If ramdisks are not prepared prior to the pod starting up then the pod will it self
+        create regular directories (fake ramdisks) instead of real ramdisks. This is a fallback
+        strategy in the case sudo/root priviligies are not available or if just running in dev mode.
+        For applications where the security of ramdisks are important then ramdisks should be properly created.
 # return 0
-# stdout: disk1:sizeM\ndisk2:sizeM\netc (ex: disk1:10M\ndisk2:2M)
+# stdout: disk1:10M
+          disk2:2M
+          etc
 ```
 Output the ramdisks configuration for the pod.
 A newline separated list of tuples describing to the Daemon what ramdisks it is expected to create: [name:size].
@@ -631,7 +662,20 @@ Ex: "tmp1:10M\ntmp2:5M"
 Note that if ramdisks have not been created prior to starting the pod, they pod is expected to gracefully handle this by creating regular directories which is can use instead of provided ramdisks.
 
 ```sh
-./pod logs [channels since container1 container2]
+./pod logs [containers] [-p] [-t timestamp] [-l limit] [-s streams] [-d details]  
+    Output logs for one, many or all [containers]. If none given then show for all.  
+    -p Show pod daemon process logs (can also be used in combination with [containers])  
+    -t timestamp=UNIX timestamp to get logs from, defaults to 0  
+       If negative value is given it is seconds relative to now (now-ts).  
+    -s streams=[stdout|stderr|stdout,stderr], defaults to \"stdout,stderr\".  
+    -l limit=nr of lines to get in total from the top, negative gets from the bottom (latest).  
+    -d details=[ts|name|stream|none], comma separated if many.  
+        if \"ts\" set will show the UNIX timestamp for each row.  
+        if \"age\" set will show age as seconds for each row.  
+        if \"name\" is set will show the container name for each row.  
+        if \"stream\" is set will show the std stream the logs came on.  
+        To not show any details set to \"none\".  
+        Defaults to \"ts,name\".  
 # return 0
 # stdout: logs
 ```
