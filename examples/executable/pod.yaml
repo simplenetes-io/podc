@@ -1,6 +1,6 @@
-apiVersion: 1.0.0-beta1
+api: 1.0.0-beta1
 podVersion: 0.0.1
-podRuntime: executable
+runtime: executable
 
 executable:
     file: bin/exec

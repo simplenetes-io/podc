@@ -142,16 +142,26 @@ parent:
 ### Container Pod Spec (using podman)
 
 ```yaml
-# For the podcompiler to know what the yaml structure is supposed to look like
-apiVersion: 1.0.0-beta1
+# For the podcompiler to know what the yaml structure is supposed to look like and how to compile the output.
+api: 1.0.0-beta1
+
+# The runtime the pod will be built for.
+# Options are: podman or executable
+# Podman runs a container pod using podman.
+# Executable is an executable file which inplements the API interface for pod interactions on command line.
+# Default is podman.
+runtime: podman
 
 # The current version of this pod. This is used by Simplenetes project management to distinguish different version of the same pod from eachother.
 # It is also suffixed to the pod name, so that pod instances of different version will not collide.
 # Must be on semver format: major.minor.patch[-tag]
+# This variable is automatically available in the preproceesing stage. It cannot be defined in the .env file.
 podVersion: 0.0.1
 
-# For container pods, podman is the only supported runtime as for now.
-podRuntime: podman
+# Define any pod labels
+labels:
+    - name: labelname
+      value: labelvalue
 
 # Define the volumes which this pod can use.
 volumes:
@@ -207,7 +217,9 @@ containers:
     - name: hello
 
       # Image, podman will try a few different registries by default.
-      image: kitematic/hello-world-nginx
+      # Here ${podVersion} will be substituted in the preprocessing stage with the value defined above.
+      # This is useful for keeping the image automatically in sync with the pod version.
+      image: my-site:${podVersion}
 
       # entrypoint to the container can be changed.
       # Default is the Docker Image ENTRYPOINT.
@@ -216,6 +228,10 @@ containers:
         - /usr/sbin/nginx
         - -c
         - /etc/nginx.conf
+
+      # Set the initial working directory of the container.
+      # Defaults to the Docker image WORKDIR.
+      workingDir: /opt/files
 
       # Arguments to the entrypoint command can be set, if the command only provides the binary.
       # Default is the docker Image CMD.
@@ -286,7 +302,7 @@ containers:
           timeout: 60
 
           # Set to true to wait for the container to exit with code 0. When the container has exited is is treated as started and ready.
-          # Any other exit code will fail the startup process.
+          # Any other exit code means that the startup process failed.
           # The exit probe is exclusively for the startupProbe (not available for readiness/liveness probes)
           exit: false
 
@@ -301,11 +317,11 @@ containers:
           # If none of them are defined then the container is treated as successfully started as soon as the container is started.
           # If wanting to run HTTP GET or TCP socket connection tests to determine the startup state, see the docs for how to do that.
 
-          # Define under `signal` which other containers shall we signal when this container has started up successfully.
+          # Define under `signal` are other containers we shall signal when this container has started up successfully.
           # Only containers which are running will get signalled, stopped containers will get restarted if they have the `on-config` or `on-interval` restart policy.
           # When a Pod is starting up fresh then only containers defined above this container can possibly be running/existing and therefore only those can get signalled.
           # However, if the container is restarted then all containers defined under `signal` will get signalled (regardless the definition order) if the startup was successful.
-          # Ruinning containers to be signalled must of course have defined the `signal` property, otherwise the signalling is ignored.
+          # Any running containers to be signalled must have defined the `signal` property, otherwise the signalling targeted at them is ignored.
           # Exited containers who are signalled and have appropiate restart policies will get restarted.
           signal:
               - container: hello
@@ -434,10 +450,10 @@ It is the coders responsibility that the executable implements the Pod API in th
 
 ```yaml
 # For the podcompiler to know what the yaml structure is supposed to look like
-apiVersion: 1.0.0-beta1
+api: 1.0.0-beta1
 
 # Manage a single executable
-podRuntime: executable
+runtime: executable
 
 # The current version of this pod. This is used by Simplenetes project management to distinguish different version of the same pod from eachother.
 podVersion: 0.0.1
@@ -501,7 +517,7 @@ Will show general usage for the pod.
 # return 0
 # stdout: version data
 ```
-Will show version information as: `podRuntime: podman 0.1\npodVersion: version\n`. Where podRuntime is `podman`, `executable`, etc and followed the runtime impl. version.  
+Will show version information as: `runtime: podman 0.1\npodVersion: version\n`. Where runtime is `podman`, `executable`, etc and followed the runtime impl. version.  
 `podVersion` is the version as depicted by the `pod.yaml`.
 
 "Podman" is the regular Pod runtime, "executable" can be any type of executable, script or binary. As example the Simplenetes Proxy uses an "executable" runtime.  

@@ -32,7 +32,7 @@ PODC_CMDLINE()
 
 VERSION()
 {
-    printf "%s\\n" "Simplenetes pod compiler version 0.1. apiVersion: 1.0.0-beta1"
+    printf "%s\\n" "Simplenetes pod compiler version 0.1 for api: 1.0.0-beta1"
 }
 
 _GETOPTS()
@@ -67,7 +67,7 @@ _GETOPTS()
             # Non switch
             posCount="$((posCount+1))"
             if [ "${posCount}" -gt "${maxPositional}" ]; then
-                PRINT "Too many positional argumets, max ${maxPositional}" "error" 0
+                PRINT "Too many positional arguments, max ${maxPositional}" "error" 0
                 return 1
             fi
             _out_rest="${_out_rest}${_out_rest:+ }${1}"
@@ -106,7 +106,7 @@ _GETOPTS()
     done
 
     if [ "${posCount}" -lt "${minPositional}" ]; then
-        PRINT "Too few positional argumets, min ${minPositional}" "error" 0
+        PRINT "Too few positional arguments, min ${minPositional}" "error" 0
         return 1
     fi
 }
@@ -205,12 +205,14 @@ COMPILE_ENTRY()
         local variablestosubst="$(TEXT_EXTRACT_VARIABLES "${text}")"
         # Load .env env file, if any
         local envfile="${inFile%.yaml}.env"
-        local values=""
+        # Preinject the podVersion as a value loaded from .env file
+        local podVersion="$(grep -m1 "^podVersion:" "${inFile}" | awk -F: '{print $2}' | tr -d " \"'")"
+        local values="podVersion=${podVersion}"
         local newline="
-    "
+"
         if [ -f "${envfile}" ]; then
             PRINT "Loading variables from .env file." "info" 0
-            values="$(cat "${envfile}")"
+            values="${values}${newline}$(cat "${envfile}")"
         else
             PRINT "No .env file present." "info" 0
         fi
@@ -245,7 +247,7 @@ COMPILE_ENTRY()
 _COMPILE_POD()
 {
     SPACE_SIGNATURE="podName inFile outFile [srcDir]"
-    SPACE_DEP="PRINT YAML_PARSE _CONTAINER_VARS _CONTAINER_SET_VAR _QUOTE_ARG STRING_ITEM_INDEXOF STRING_ITEM_GET _GET_CONTAINER_NR _COMPILE_INGRESS _COMPILE_RUN _COMPILE_LABELS _COMPILE_ENTRYPOINT _COMPILE_CPUMEM STRING_SUBST _GET_CONTAINER_VAR _COMPILE_PODMAN _COMPILE_PROCESS FILE_REALPATH _COMPILE_ENV _COMPILE_MOUNTS _COMPILE_STARTUP_PROBE_SIGNAL _COMPILE_STARTUP_PROBE _COMPILE_STARTUP_PROBE_TIMEOUT _COMPILE_READINESS_PROBE _COMPILE_READINESS_PROBE_TIMEOUT  _COMPILE_LIVENESS_PROBE _COMPILE_LIVENESS_PROBE_TIMEOUT _COMPILE_SIGNALEXEC _COMPILE_IMAGE _COMPILE_RESTART"
+    SPACE_DEP="PRINT YAML_PARSE _CONTAINER_VARS _CONTAINER_SET_VAR _QUOTE_ARG STRING_ITEM_INDEXOF STRING_ITEM_GET _GET_CONTAINER_NR _COMPILE_INGRESS _COMPILE_RUN _COMPILE_LABELS _COMPILE_ENTRYPOINT _COMPILE_CPUMEM STRING_SUBST _GET_CONTAINER_VAR _COMPILE_PODMAN _COMPILE_EXECUTABLE FILE_REALPATH _COMPILE_ENV _COMPILE_MOUNTS _COMPILE_STARTUP_PROBE_SIGNAL _COMPILE_STARTUP_PROBE _COMPILE_STARTUP_PROBE_TIMEOUT _COMPILE_READINESS_PROBE _COMPILE_READINESS_PROBE_TIMEOUT  _COMPILE_LIVENESS_PROBE _COMPILE_LIVENESS_PROBE_TIMEOUT _COMPILE_SIGNALEXEC _COMPILE_IMAGE _COMPILE_RESTART"
 
     local podName="${1}"
     shift
@@ -280,7 +282,7 @@ _COMPILE_POD()
 
     # Output the fill YAML file if in debug mode
     local dbgoutput="$(cat "${inFile}")"
-    PRINT "Pod YAMl: "$'\n'"${dbgoutput}" "debug" 0
+    PRINT "Pod YAML: "$'\n'"${dbgoutput}" "debug" 0
 
     # Load and parse YAML
     # Bashism
@@ -288,18 +290,21 @@ _COMPILE_POD()
     YAML_PARSE "${inFile}" "evals"
     eval "${evals[@]}"
 
-    # get apiVersion
-    local apiVersion=
-    _copy "apiVersion" "/apiVersion"
+    # get api version
+    local api=
+    _copy "api" "/api"
 
-    if [ "${apiVersion}" != "1.0.0-beta1" ]; then
-        PRINT "apiVersion must be set to '1.0.0-beta1'" "error" 0
+    if [ "${api}" != "1.0.0-beta1" ]; then
+        PRINT "api must be set to '1.0.0-beta1'" "error" 0
         return 1
     fi
 
-    # get podRuntime
-    local podRuntime=
-    _copy "podRuntime" "/podRuntime"
+    # get runtime
+    local runtime=
+    _copy "runtime" "/runtime"
+    if [ -z "${runtime}" ]; then
+        runtime="podman"
+    fi
 
     # get podVersion
     local podVersion=
@@ -323,16 +328,18 @@ _COMPILE_POD()
     fi
     runtimeDir="$(FILE_REALPATH "${runtimeDir}")"
 
-    if [ "${podRuntime}" = "podman" ]; then
+    PRINT "Compiling \"${podName}-${podVersion}\" for api version: \"${api}\" and runtime \"${runtime}\", YAML file: ${inFile}." "info" 0
+
+    if [ "${runtime}" = "podman" ]; then
         # Get path to runtime
         local runtimePath=""
         while true; do
-            for runtimePath in "${runtimeDir}/podman-runtime" "${runtimeDir}/release/podman-runtime" "/opt/podc/podman-runtime"; do
+            for runtimePath in "${runtimeDir}/podman-runtime-${api}" "${runtimeDir}/lib/podman-runtime-${api}" "${runtimeDir}/release/podman-runtime-${api}" "/opt/podc/podman-runtime-${api}"; do
                 if [ -f "${runtimePath}" ]; then
                     break 2
                 fi
             done
-            PRINT "Could not locate podman-runtime" "error" 0
+            PRINT "Could not locate podman-runtime-${api}" "error" 0
             return 1
         done
         local buildDir="${outFile%/*}"
@@ -356,21 +363,21 @@ _COMPILE_POD()
         else
             rm -f "${outFile}.ingress.conf"
         fi
-    elif [ "${podRuntime}" = "executable" ]; then
-        if ! _COMPILE_PROCESS "${podName}" "${podVersion}" "${srcDir}" "${outFile}"; then
+    elif [ "${runtime}" = "executable" ]; then
+        if ! _COMPILE_EXECUTABLE "${podName}" "${podVersion}" "${srcDir}" "${outFile}"; then
             PRINT "Could not compile pod for executable runtime." "error" 0
             return 1
         fi
         PRINT "Writing pod executable to ${outFile}" "ok" 0
     else
-        PRINT "Unknown podRuntime. Only 'podman' and 'executable' runtimes are supported." "error" 0
+        PRINT "Unknown runtime \"${runtime}\" . Only \"podman\" or \"executable\" runtimes are supported." "error" 0
         return 1
     fi
 }
 
 # Inherits YAML varibles
-# Compiles for a single process pod.
-_COMPILE_PROCESS()
+# Compiles for a single executable pod.
+_COMPILE_EXECUTABLE()
 {
     SPACE_SIGNATURE="podName podVersion srcDir outFile"
 
@@ -451,7 +458,7 @@ _COMPILE_PODMAN()
     local POD="${podName}-${podVersion}"
     local POD_VERSION="${podVersion}"  # Part of the pod name.
     local POD_LABELS=""
-    local POD_CREATE="--name \${POD} \${POD_LABELS}"
+    local POD_CREATE="--name \${POD}"
     local POD_VOLUMES=""       # Used by runtime to create container volumes.
     local POD_RAMDISKS=""      # Read by the Daemon to create ramdisks.
     local POD_HOSTPORTS=""     # Used by runtime to check that hosts ports are free before starting the pod.
@@ -534,7 +541,6 @@ _COMPILE_PODMAN()
         elif [ "${type}" = "host" ]; then
             volumes_host="${volumes_host} ${volume}"
             bind="$(FILE_REALPATH "${bind}" "${srcDir}")"
-            PRINT "${bind}"
             volumes_host_bind="${volumes_host_bind} ${bind}"
         fi
 
@@ -790,7 +796,7 @@ _COMPILE_PODMAN()
 
     local index=
     for index in $(seq 1 ${POD_CONTAINER_COUNT}); do
-        for var in NAME RESTARTPOLICY IMAGE STARTUPPROBE STARTUPTIMEOUT STARTUPSIGNAL LIVENESSPROBE LIVENESSTIMEOUT READINESSPROBE READINESSTIMEOUT SIGNALSIG SIGNALCMD CONFIGS MOUNTS ENV COMMAND ARGS CPUMEM PORTS RUN; do
+        for var in NAME RESTARTPOLICY IMAGE STARTUPPROBE STARTUPTIMEOUT STARTUPSIGNAL LIVENESSPROBE LIVENESSTIMEOUT READINESSPROBE READINESSTIMEOUT SIGNALSIG SIGNALCMD CONFIGS MOUNTS ENV COMMAND ARGS WORKINGDIR CPUMEM PORTS RUN; do
             local varname="POD_CONTAINER_${var}_${index}"
             local value="${!varname}"
             _out_pod="${_out_pod}${newline}$(printf "%s=\"%s\"\\n" "${varname}" "${value}")"
@@ -805,6 +811,7 @@ _COMPILE_PODMAN()
 _COMPILE_LABELS()
 {
     SPACE_SIGNATURE="[extralabels]"
+    SPACE_DEP="STRING_IS_ALL STRING_SUBST PRINT"
 
     local extraLabels="${1:-}"
 
@@ -822,6 +829,10 @@ _COMPILE_LABELS()
         _copy "value" "/labels/${index0}/value"
         STRING_SUBST "value" "'" "" 1
         STRING_SUBST "value" '"' "" 1
+        if ! STRING_IS_ALL "${value}" "A-Za-z0-9_./-"; then
+            PRINT "Invalid characters in labels. Only [A-Za-z0-9._-/] allowed" "error" 0
+            return 1
+        fi
         labels="${labels}${labels:+ }--label ${name}=${value}"
     done
 
@@ -861,6 +872,15 @@ _COMPILE_ENTRYPOINT()
     done
 
     _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "ARGS" "value"
+
+    local value=
+    _copy "value" "/containers/${index}/workingDir"
+    if ! STRING_IS_ALL "${value}" "A-Za-z0-9_./-"; then
+        PRINT "Invalid characters in workingDir. Only [A-Za-z0-9._-/] allowed" "error" 0
+        return 1
+    fi
+    value="${value:+--workdir=$value}"
+    _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "WORKINGDIR" "value"
 }
 
 # Macro helper function
@@ -1185,7 +1205,7 @@ _COMPILE_CPUMEM()
 _COMPILE_RUN()
 {
     # Internal "macro" function. We don't define any SPACE_ headers for this.
-    local run="\\\${ADD_PROXY_IP:-} --name \${POD_CONTAINER_NAME_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ENV_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_PORTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_COMMAND_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_MOUNTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_IMAGE_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ARGS_${POD_CONTAINER_COUNT}}"
+    local run="\\\${ADD_PROXY_IP:-} --name \${POD_CONTAINER_NAME_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ENV_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_PORTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_COMMAND_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_MOUNTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_WORKINGDIR_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_IMAGE_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ARGS_${POD_CONTAINER_COUNT}}"
     _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "RUN" "run"
 }
 
@@ -1614,6 +1634,7 @@ local POD_CONTAINER_MOUNTS_${container_nr}=
 local POD_CONTAINER_ENV_${container_nr}=
 local POD_CONTAINER_COMMAND_${container_nr}=
 local POD_CONTAINER_ARGS_${container_nr}=
+local POD_CONTAINER_WORKINGDIR_${container_nr}=
 local POD_CONTAINER_CPUMEM_${container_nr}=
 local POD_CONTAINER_PORTS_${container_nr}=
 local POD_CONTAINER_RUN_${container_nr}="

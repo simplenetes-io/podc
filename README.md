@@ -2,7 +2,7 @@
 
 This Space Module compiles a Simplenetes Pod YAML specification into a runnable Pod.
 
-A `podRuntime` is either `podman` or `executable`.
+A `runtime` is either `podman` or `executable`.
 
 The `podman` runtime creates a container pod which is very similar to Kubernetes Pods with the difference that it is a standalone `pod` Posix compliant shell script which manages the pods lifecycle. This shell script uses `podman` to create and manage containers.
 

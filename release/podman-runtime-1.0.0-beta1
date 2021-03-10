@@ -69,6 +69,8 @@ POD_ENTRY()
 
         if [ "${action}" = "status" ]; then
             _SHOW_STATUS
+        elif [ "${action}" = "readiness" ]; then
+            _GET_READINESS
         elif [ "${action}" = "download" ]; then
             local _out_f="false"
 
@@ -171,7 +173,7 @@ _VERSION()
 {
     local _SPACE_NAME="_VERSION"
 
-    printf "podVersion: %s\\npodRuntime: %s\\n" "${POD_VERSION}" "${RUNTIME_VERSION}"
+    printf "podVersion: %s\\nruntime: %s\\n" "${POD_VERSION}" "${RUNTIME_VERSION}"
 }
 
 _SHOW_USAGE()
@@ -182,7 +184,7 @@ _SHOW_USAGE()
         Output this help.
 
     version
-        Output podVersion and podRuntime type and version.
+        Output podVersion and runtime type and version.
 
     info
         Output information about this pod's configuration.
@@ -192,6 +194,10 @@ _SHOW_USAGE()
         This function outputs the \"pod.status\" file if it exists and the daemon process exists,
         otherwise status outputted is \"unknown\" if the daemon process does not exist.
         If the status file is not existing the pod is assumed to not exist and the output is \"non-existing\".
+
+    readiness
+        Check the readiness of the pod.
+        Exit with code 0 if ready, code 1 if not ready.
 
     download [-f]
         Perform pull on images for all containers.
@@ -872,16 +878,46 @@ _SHOW_INFO()
     #printf "%s\\n" "Podname
 #CONTAINER   RESTART   MOUNTS   PORTS   IMAGE
 #"
+    local data=
+
+    printf "pod: %s\\n" "${POD}"
+    printf "podVersion: %s\\n" "${POD_VERSION}"
+    printf "hostPorts: %s\\n" "${POD_HOSTPORTS}"
+
+    data="${POD_LABELS}"
+    STRING_SUBST "data" " --label " " " 1
+    data="${data#--label }"
+    printf "labels: %s\\n" "${data}"
+
+    printf "volumes: %s\\n" "${POD_VOLUMES}"
+    printf "ramdisks: %s\\n" "${POD_RAMDISKS}"
+
+    printf "containers:\\n"
+
     local container_nr=
     for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
-        local name=
-        _GET_CONTAINER_VAR "${container_nr}" "NAME" "name"
-        printf "Container: %s\\n" "${name}"
 
-        printf "Mounts: "
+        printf "    - name: "
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "data"
+        data="${data%-${POD}}"
+        printf "%s\\n" "${data}"
+
+        printf "      container: "
+        _OUTPUT_CONTAINER_INFO "${container_nr}" "name"
+
+        printf "      image: "
+        _OUTPUT_CONTAINER_INFO "${container_nr}" "image"
+
+        printf "      configs: "
+        _OUTPUT_CONTAINER_INFO "${container_nr}" "configs"
+
+        printf "      restart: "
+        _OUTPUT_CONTAINER_INFO "${container_nr}" "restartpolicy"
+
+        printf "      mounts: "
         _OUTPUT_CONTAINER_INFO "${container_nr}" "mounts"
 
-        printf "Ports: "
+        printf "      ports: "
         _OUTPUT_CONTAINER_INFO "${container_nr}" "ports"
     done
 }
@@ -904,14 +940,46 @@ status: non-existing"
 
     # Check so that PID still exists
     # TODO: we should ues _POD_PID to be sure the pid is valid, right?
-    local pid="$(printf "%s\\n" "${contents}" |grep "pid:")"
+    local pid="$(printf "%s\\n" "${contents}" | grep "^pid:")"
     pid="${pid#*:}"
     STRING_TRIM "pid"
-    if [ -n "${pid}" ] && ! kill -0 "${pid}" 2>/dev/null; then
+    if [ -z "${pid}" ] || ! kill -0 "${pid}" 2>/dev/null; then
         printf "%s\\n" "pod: ${POD}
 status: unknown"
     else
         printf "%s\\n" "${contents}"
+    fi
+}
+
+_GET_READINESS()
+{
+    local _SPACE_NAME="_GET_READINESS"
+
+    local statusFile="${POD_FILE}.status"
+
+    if [ ! -f "${statusFile}" ]; then
+        return 1
+    fi
+
+    # Read the file
+    local contents=
+    contents="$(cat "${statusFile}")"
+
+    # Check so that PID still exists
+    # TODO: we should ues _POD_PID to be sure the pid is valid, right?
+    local pid="$(printf "%s\\n" "${contents}" | grep "^pid:")"
+    pid="${pid#*:}"
+    STRING_TRIM "pid"
+    if [ -z "${pid}" ] || ! kill -0 "${pid}" 2>/dev/null; then
+        return 1
+    else
+        local readiness="$(printf "%s\\n" "${contents}" | grep "^readiness:")"
+        readiness="${readiness#*:}"
+        STRING_TRIM "readiness"
+        if [ "${readiness}" = "1" ]; then
+            return 0
+        fi
+        return 1
     fi
 }
 
@@ -1009,7 +1077,7 @@ _GETOPTS()
             # Non switch
             posCount="$((posCount+1))"
             if [ "${posCount}" -gt "${maxPositional}" ]; then
-                PRINT "Too many positional argumets, max ${maxPositional}" "error" 0
+                PRINT "Too many positional arguments, max ${maxPositional}" "error" 0
                 return 1
             fi
             _out_rest="${_out_rest}${_out_rest:+ }${1}"
@@ -1048,7 +1116,7 @@ _GETOPTS()
     done
 
     if [ "${posCount}" -lt "${minPositional}" ]; then
-        PRINT "Too few positional argumets, min ${minPositional}" "error" 0
+        PRINT "Too few positional arguments, min ${minPositional}" "error" 0
         return 1
     fi
 }
@@ -1143,7 +1211,7 @@ _CREATE_POD()
 
     local id=
     # shellcheck disable=2086
-    if id=$(podman pod create --label daemonid="${daemonId}" ${POD_CREATE}); then
+    if id=$(podman pod create --label daemonid="${daemonId}" ${POD_LABELS} ${POD_CREATE}); then
         PRINT "Pod ${POD} created with id: ${id}, daemin pid: ${pid}" "ok" 0
     else
         PRINT "Pod ${POD} could not be created" "error" 0
@@ -1818,6 +1886,29 @@ _OUTPUT_CONTAINER_INFO()
     local field="${1}"
     shift
 
+    if [ "${field}" = "name" ]; then
+        _GET_CONTAINER_VAR "${container_nr}" "NAME" "data"
+        printf "%s\\n" "${data}"
+    fi
+
+    if [ "${field}" = "image" ]; then
+        _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "data"
+        printf "%s\\n" "${data}"
+    fi
+
+    if [ "${field}" = "restartpolicy" ]; then
+        _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "data"
+        printf "%s\\n" "${data}"
+    fi
+
+    if [ "${field}" = "configs" ]; then
+        local data=
+        _GET_CONTAINER_VAR "${container_nr}" "CONFIGS" "data"
+        STRING_SUBST "data" " -v " "" 1
+        data="${data#-v }"
+        printf "%s\\n" "${data}"
+    fi
+
     if [ "${field}" = "mounts" ]; then
         local data=
         _GET_CONTAINER_VAR "${container_nr}" "MOUNTS" "data"
@@ -1829,7 +1920,7 @@ _OUTPUT_CONTAINER_INFO()
     if [ "${field}" = "ports" ]; then
         local data=
         _GET_CONTAINER_VAR "${container_nr}" "PORTS" "data"
-        STRING_SUBST "data" " -p " "" 1
+        STRING_SUBST "data" " -p " " " 1
         data="${data#-p }"
         printf "%s\\n" "${data}"
     fi
@@ -2218,6 +2309,8 @@ _WRITE_STATUS_FILE()
     local updated="$(date +%s)"
 
     local contents="pod: ${POD}
+podVersion: ${POD_VERSION}
+hostPorts: ${POD_HOSTPORTS}
 created: ${created}
 started: ${started}
 updated: ${updated}
@@ -2228,7 +2321,8 @@ readiness: ${readiness}
 
     local containers=""
 
-    if [ "${status}" = "started" ] || [ "${status}" = "running" ]; then
+    # Showing container info for all states now.
+    if true || [ "${status}" = "started" ] || [ "${status}" = "running" ]; then
         # started/running
         # Get container statuses
         containers="containers:
@@ -2237,6 +2331,18 @@ readiness: ${readiness}
         for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
             local container=
             _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+
+            local name="${container%-${POD}}"
+
+            local image=
+            _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "image"
+
+            local restart=
+            _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restart"
+
+            local mounts="$(_OUTPUT_CONTAINER_INFO "${container_nr}" "mounts")"
+            local ports="$(_OUTPUT_CONTAINER_INFO "${container_nr}" "ports")"
+
             local startCount=
             _GET_CONTAINER_VAR "${container_nr}" "STARTCOUNT" "startCount"
             local containerstatus="$(_CONTAINER_STATUS "${container}")"
@@ -2245,12 +2351,17 @@ readiness: ${readiness}
                 exitcode="$(_CONTAINER_EXITCODE "${container}")"
             fi
 
-            containers="${containers} - container: ${container}
-   startCount: ${startCount:-0}
-   status: ${containerstatus}
+            containers="${containers}    - name: ${name}
+      container: ${container}
+      image: ${image}
+      restart: ${restart}
+      mounts: ${mounts}
+      ports: ${ports}
+      startCount: ${startCount:-0}
+      status: ${containerstatus}
 "
             if [ -n "${exitcode}" ]; then
-                containers="${containers}exitCode: ${exitcode}
+                containers="${containers}      exitCode: ${exitcode}
 "
             fi
         done
