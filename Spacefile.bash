@@ -353,15 +353,23 @@ _COMPILE_POD()
         PRINT "Writing pod executable to ${outFile}" "ok" 0
         printf "%s\\n" "${_out_pod}" >"${outFile}"
         chmod +x "${outFile}"
+        local portmappingsFile="${outFile}.portmappings.conf"
+        # Make into dotfile
+        portmappingsFile="${portmappingsFile%/*}/.${portmappingsFile##*/}"
+
+        local ingressFile="${outFile}.ingress.conf"
+        # Make into dotfile
+        ingressFile="${ingressFile%/*}/.${ingressFile##*/}"
+
         if [ -n "${POD_PROXYCONF}" ]; then
-            printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.portmappings.conf"
+            printf "%s\\n" "${POD_PROXYCONF}" >"${portmappingsFile}"
         else
-            rm -f "${outFile}.portmappings.conf"
+            rm -f "${portmappingsFile}"
         fi
         if [ -n "${POD_INGRESSCONF}" ]; then
-            printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+            printf "%s\\n" "${POD_INGRESSCONF}" >"${ingressFile}"
         else
-            rm -f "${outFile}.ingress.conf"
+            rm -f "${ingressFile}"
         fi
     elif [ "${runtime}" = "executable" ]; then
         if ! _COMPILE_EXECUTABLE "${podName}" "${podVersion}" "${srcDir}" "${outFile}"; then
@@ -414,15 +422,23 @@ _COMPILE_EXECUTABLE()
         return 1
     fi
 
+    local portmappingsFile="${outFile}.portmappings.conf"
+    # Make into dotfile
+    portmappingsFile="${portmappingsFile%/*}/.${portmappingsFile##*/}"
+
+    local ingressFile="${outFile}.ingress.conf"
+    # Make into dotfile
+    ingressFile="${ingressFile%/*}/.${ingressFile##*/}"
+
     if [ -n "${POD_PROXYCONF}" ]; then
-        printf "%s\\n" "${POD_PROXYCONF}" >"${outFile}.portmappings.conf"
+        printf "%s\\n" "${POD_PROXYCONF}" >"${portmappingsFile}"
     else
-        rm -f "${outFile}.portmappings.conf"
+        rm -f "${portmappingsFile}"
     fi
     if [ -n "${POD_INGRESSCONF}" ]; then
-        printf "%s\\n" "${POD_INGRESSCONF}" >"${outFile}.ingress.conf"
+        printf "%s\\n" "${POD_INGRESSCONF}" >"${ingressFile}"
     else
-        rm -f "${outFile}.ingress.conf"
+        rm -f "${ingressFile}"
     fi
 
     # Copy the executable

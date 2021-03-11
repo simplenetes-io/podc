@@ -296,7 +296,7 @@ _CREATE()
         fi
 
         # Destroy pod and all containers
-        PRINT "Pod ${POD} is in a bad state, destroy it and all containers (leave volumes)" "info" 0
+        PRINT "Pod ${POD} is in a bad state, destroying it and all containers (leaving volumes)" "info" 0
         if ! _DESTROY_POD; then
             return 1
         fi
@@ -872,12 +872,6 @@ _SHOW_INFO()
 {
     local _SPACE_NAME="_SHOW_INFO"
 
-    # TODO: this output needs to be structured and prettified
-    # also, alot of things are missing.
-
-    #printf "%s\\n" "Podname
-#CONTAINER   RESTART   MOUNTS   PORTS   IMAGE
-#"
     local data=
 
     printf "pod: %s\\n" "${POD}"
@@ -927,6 +921,8 @@ _SHOW_STATUS()
     local _SPACE_NAME="_SHOW_STATUS"
 
     local statusFile="${POD_FILE}.status"
+    # Make into dotfile
+    statusFile="${statusFile%/*}/.${statusFile##*/}"
 
     if [ ! -f "${statusFile}" ]; then
         printf "%s\\n" "pod: ${POD}
@@ -939,16 +935,23 @@ status: non-existing"
     contents="$(cat "${statusFile}")"
 
     # Check so that PID still exists
-    # TODO: we should ues _POD_PID to be sure the pid is valid, right?
-    local pid="$(printf "%s\\n" "${contents}" | grep "^pid:")"
-    pid="${pid#*:}"
-    STRING_TRIM "pid"
-    if [ -z "${pid}" ] || ! kill -0 "${pid}" 2>/dev/null; then
-        printf "%s\\n" "pod: ${POD}
-status: unknown"
+    local podPid=
+    if ! podPid="$(_POD_PID)"; then
+        # Check if the status file is marked as exited, then we output it.
+        local status="$(printf "%s\\n" "${contents}" | grep "^status:")"
+        status="${status#*:}"
+        STRING_TRIM "status"
+        if [ "${status}" = "exited" ] || [ "${status}" = "removed" ]; then
+            printf "%s\\n" "${contents}"
+            return 0
+        fi
     else
         printf "%s\\n" "${contents}"
+        return 0
     fi
+
+    printf "%s\\n" "pod: ${POD}
+status: unknown"
 }
 
 _GET_READINESS()
@@ -956,6 +959,8 @@ _GET_READINESS()
     local _SPACE_NAME="_GET_READINESS"
 
     local statusFile="${POD_FILE}.status"
+    # Make into dotfile
+    statusFile="${statusFile%/*}/.${statusFile##*/}"
 
     if [ ! -f "${statusFile}" ]; then
         return 1
@@ -966,21 +971,17 @@ _GET_READINESS()
     contents="$(cat "${statusFile}")"
 
     # Check so that PID still exists
-    # TODO: we should ues _POD_PID to be sure the pid is valid, right?
-    local pid="$(printf "%s\\n" "${contents}" | grep "^pid:")"
-    pid="${pid#*:}"
-    STRING_TRIM "pid"
-    if [ -z "${pid}" ] || ! kill -0 "${pid}" 2>/dev/null; then
-        return 1
-    else
-        local readiness="$(printf "%s\\n" "${contents}" | grep "^readiness:")"
-        readiness="${readiness#*:}"
-        STRING_TRIM "readiness"
-        if [ "${readiness}" = "1" ]; then
-            return 0
-        fi
+    local podPid=
+    if ! podPid="$(_POD_PID)"; then
         return 1
     fi
+    local readiness="$(printf "%s\\n" "${contents}" | grep "^readiness:")"
+    readiness="${readiness#*:}"
+    STRING_TRIM "readiness"
+    if [ "${readiness}" = "1" ]; then
+        return 0
+    fi
+    return 1
 }
 
 _CHECK_PODMAN()
@@ -1261,6 +1262,8 @@ _DESTROY_POD()
         else
             PRINT "Pod ${POD} destroyed" "debug" 0
         fi
+
+        _WRITE_STATUS_FILE "" "" "removed" "0" ""
     fi
 
     _DESTROY_FAKE_RAMDISKS
@@ -1270,9 +1273,9 @@ _POD_STATUS()
 {
     local _SPACE_NAME="_POD_STATUS"
 
-    # Note: podman pod ps in this version does not filter using regex, so --filter name matches
+    # Note: podman pod ps in some versions does not filter using regex, so --filter name matches
     # all pods who has part of the name in them, hence the grep/awk crafting.
-    podman pod ps --format "{{.Name}} {{.Status}}" |grep "^${POD}\>" |awk '{print $2}'
+    podman pod ps --format "{{.Name}} {{.Status}}" | grep "^${POD}\>" |awk '{print $2}'
 }
 
 PRINT()
@@ -1333,7 +1336,7 @@ _POD_PID()
     local _SPACE_NAME="_POD_PID"
 
     local label=
-    if ! label="$(podman pod inspect ${POD} |grep "\"daemonid\": .*" -o |cut -d' ' -f2- |tr -d '"')"; then
+    if ! label="$(podman pod inspect ${POD} 2>/dev/null | grep "\"daemonid\": .*" -o | cut -d' ' -f2- | tr -d '"')"; then
         return 1
     fi
 
@@ -1342,7 +1345,7 @@ _POD_PID()
 
     # TODO: make ps work with busybox
     local starttime2=
-    if ! starttime2="$(ps --no-headers -p "${pid}" -o lstart)"; then
+    if ! starttime2="$(ps --no-headers -p "${pid}" -o lstart 2>/dev/null)"; then
         return 1
     fi
 
@@ -1519,7 +1522,13 @@ _DAEMON_PROCESS()
 
     PRINT "Daemon with pid ${pid} exited" "info" 0
 
-    _WRITE_STATUS_FILE "${created}" "${started}" "exited" "0" ""
+    local status="exited"
+    local podstatus="$(_POD_STATUS)"
+    if [ "${podstatus}" = "" ]; then
+        status="removed"
+    fi
+
+    _WRITE_STATUS_FILE "${created}" "${started}" "${status}" "0" ""
 }
 
 _LOG_FILE()
@@ -2098,6 +2107,93 @@ _RM_CONTAINER()
     fi
 }
 
+_WRITE_STATUS_FILE()
+{
+    local _SPACE_NAME="_WRITE_STATUS_FILE"
+
+    local created="${1}"
+    shift
+
+    local started="${1}"
+    shift
+
+    local status="${1}"
+    shift
+
+    local readiness="${1}"
+    shift
+
+    local pid="${1}"
+    shift
+
+    local statusFile="${POD_FILE}.status"
+    # Make into dotfile
+    statusFile="${statusFile%/*}/.${statusFile##*/}"
+    local updated="$(date +%s)"
+
+    local contents="pod: ${POD}
+podVersion: ${POD_VERSION}
+hostPorts: ${POD_HOSTPORTS}
+created: ${created}
+started: ${started}
+updated: ${updated}
+status: ${status}
+pid: ${pid}
+readiness: ${readiness}
+"
+
+    local containers=""
+
+    # Showing container info for all states now.
+    if true || [ "${status}" = "started" ] || [ "${status}" = "running" ]; then
+        # started/running
+        # Get container statuses
+        containers="containers:
+"
+        local container_nr=
+        for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
+            local container=
+            _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
+
+            local name="${container%-${POD}}"
+
+            local image=
+            _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "image"
+
+            local restart=
+            _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restart"
+
+            local mounts="$(_OUTPUT_CONTAINER_INFO "${container_nr}" "mounts")"
+            local ports="$(_OUTPUT_CONTAINER_INFO "${container_nr}" "ports")"
+
+            local startCount=
+            _GET_CONTAINER_VAR "${container_nr}" "STARTCOUNT" "startCount"
+            local containerstatus="$(_CONTAINER_STATUS "${container}")"
+            local exitcode=""
+            if [ "${containerstatus}" != "running" ]; then
+                exitcode="$(_CONTAINER_EXITCODE "${container}")"
+            fi
+
+            containers="${containers}    - name: ${name}
+      container: ${container}
+      image: ${image}
+      restart: ${restart}
+      mounts: ${mounts}
+      ports: ${ports}
+      startCount: ${startCount:-0}
+      status: ${containerstatus}
+"
+            if [ -n "${exitcode}" ]; then
+                containers="${containers}      exitCode: ${exitcode}
+"
+            fi
+        done
+    fi
+
+    printf "%s%s" "${contents}" "${containers}" >"${statusFile}.tmp"
+    mv -f "${statusFile}.tmp" "${statusFile}"
+}
+
 _START_CONTAINERS()
 {
     local _SPACE_NAME="_START_CONTAINERS"
@@ -2286,91 +2382,6 @@ _READINESS_PROBE()
     done
 }
 
-_WRITE_STATUS_FILE()
-{
-    local _SPACE_NAME="_WRITE_STATUS_FILE"
-
-    local created="${1}"
-    shift
-
-    local started="${1}"
-    shift
-
-    local status="${1}"
-    shift
-
-    local readiness="${1}"
-    shift
-
-    local pid="${1}"
-    shift
-
-    local statusFile="${POD_FILE}.status"
-    local updated="$(date +%s)"
-
-    local contents="pod: ${POD}
-podVersion: ${POD_VERSION}
-hostPorts: ${POD_HOSTPORTS}
-created: ${created}
-started: ${started}
-updated: ${updated}
-status: ${status}
-pid: ${pid}
-readiness: ${readiness}
-"
-
-    local containers=""
-
-    # Showing container info for all states now.
-    if true || [ "${status}" = "started" ] || [ "${status}" = "running" ]; then
-        # started/running
-        # Get container statuses
-        containers="containers:
-"
-        local container_nr=
-        for container_nr in $(seq 1 "${POD_CONTAINER_COUNT}"); do
-            local container=
-            _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
-
-            local name="${container%-${POD}}"
-
-            local image=
-            _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "image"
-
-            local restart=
-            _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restart"
-
-            local mounts="$(_OUTPUT_CONTAINER_INFO "${container_nr}" "mounts")"
-            local ports="$(_OUTPUT_CONTAINER_INFO "${container_nr}" "ports")"
-
-            local startCount=
-            _GET_CONTAINER_VAR "${container_nr}" "STARTCOUNT" "startCount"
-            local containerstatus="$(_CONTAINER_STATUS "${container}")"
-            local exitcode=""
-            if [ "${containerstatus}" != "running" ]; then
-                exitcode="$(_CONTAINER_EXITCODE "${container}")"
-            fi
-
-            containers="${containers}    - name: ${name}
-      container: ${container}
-      image: ${image}
-      restart: ${restart}
-      mounts: ${mounts}
-      ports: ${ports}
-      startCount: ${startCount:-0}
-      status: ${containerstatus}
-"
-            if [ -n "${exitcode}" ]; then
-                containers="${containers}      exitCode: ${exitcode}
-"
-            fi
-        done
-    fi
-
-    printf "%s%s" "${contents}" "${containers}" >"${statusFile}.tmp"
-    mv -f "${statusFile}.tmp" "${statusFile}"
-}
-
 _CONTAINER_STOP()
 {
     local _SPACE_NAME="_CONTAINER_STOP"
@@ -2502,6 +2513,20 @@ _STRING_ESCAPE()
         __result="${__result}${__left}${__escapes}${__escapes}\\${2}"
     done
     eval "${1}=\${__result}"
+}
+
+_CONTAINER_EXITCODE()
+{
+    local _SPACE_NAME="_CONTAINER_EXITCODE"
+
+    local container="${1}"
+    shift
+
+    local code
+    if ! code="$(podman inspect "${container}" --format "{{.State.ExitCode}}" 2>/dev/null)"; then
+        return 1
+    fi
+    printf "%d\\n" "${code}"
 }
 
 _RUN_CONTAINER()
@@ -2652,20 +2677,6 @@ _RUN_CONTAINER()
             _SIGNAL_CONTAINER "${container}" "${container_nr}"
         done
     fi
-}
-
-_CONTAINER_EXITCODE()
-{
-    local _SPACE_NAME="_CONTAINER_EXITCODE"
-
-    local container="${1}"
-    shift
-
-    local code
-    if ! code="$(podman inspect "${container}" --format "{{.State.ExitCode}}" 2>/dev/null)"; then
-        return 1
-    fi
-    printf "%d\\n" "${code}"
 }
 
 _CONTAINER_FINISHEDAT()

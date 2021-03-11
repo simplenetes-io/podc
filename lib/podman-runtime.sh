@@ -93,13 +93,14 @@ _POD_EXISTS()
 }
 
 # Get the current pod status
+# Return values are: "Running", "Created", "Exited"
 _POD_STATUS()
 {
     #SPACE_ENV="POD"
 
-    # Note: podman pod ps in this version does not filter using regex, so --filter name matches
+    # Note: podman pod ps in some versions does not filter using regex, so --filter name matches
     # all pods who has part of the name in them, hence the grep/awk crafting.
-    podman pod ps --format "{{.Name}} {{.Status}}" |grep "^${POD}\>" |awk '{print $2}'
+    podman pod ps --format "{{.Name}} {{.Status}}" | grep "^${POD}\>" |awk '{print $2}'
 }
 
 _KILL_POD()
@@ -186,7 +187,7 @@ _STOP_POD()
 # Remove the pod and all containers, ramdisks (if created by us), but leave volumes and configs.
 _DESTROY_POD()
 {
-    SPACE_DEP="_DESTROY_FAKE_RAMDISKS PRINT _GET_CONTAINER_VAR _RM_CONTAINER _CONTAINER_EXISTS _POD_EXISTS"
+    SPACE_DEP="_DESTROY_FAKE_RAMDISKS PRINT _GET_CONTAINER_VAR _RM_CONTAINER _CONTAINER_EXISTS _POD_EXISTS _WRITE_STATUS_FILE"
 
     local container=
     local container_nr=
@@ -205,6 +206,8 @@ _DESTROY_POD()
         else
             PRINT "Pod ${POD} destroyed" "debug" 0
         fi
+
+        _WRITE_STATUS_FILE "" "" "removed" "0" ""
     fi
 
     _DESTROY_FAKE_RAMDISKS
@@ -368,7 +371,7 @@ _POD_PID()
 {
 
     local label=
-    if ! label="$(podman pod inspect ${POD} |grep "\"daemonid\": .*" -o |cut -d' ' -f2- |tr -d '"')"; then
+    if ! label="$(podman pod inspect ${POD} 2>/dev/null | grep "\"daemonid\": .*" -o | cut -d' ' -f2- | tr -d '"')"; then
         return 1
     fi
 
@@ -377,7 +380,7 @@ _POD_PID()
 
     # TODO: make ps work with busybox
     local starttime2=
-    if ! starttime2="$(ps --no-headers -p "${pid}" -o lstart)"; then
+    if ! starttime2="$(ps --no-headers -p "${pid}" -o lstart 2>/dev/null)"; then
         return 1
     fi
 
@@ -1080,12 +1083,6 @@ _SHOW_INFO()
 {
     SPACE_DEP="_OUTPUT_CONTAINER_INFO _GET_CONTAINER_VAR"
 
-    # TODO: this output needs to be structured and prettified
-    # also, alot of things are missing.
-
-    #printf "%s\\n" "Podname
-#CONTAINER   RESTART   MOUNTS   PORTS   IMAGE
-#"
     local data=
 
     printf "pod: %s\\n" "${POD}"
@@ -1131,13 +1128,15 @@ _SHOW_INFO()
 }
 
 # Show the current status of the pod and its containers and volumes
-# This function output the pod.state file (if it is fresh) otherwise it outputs a new summary.
+# This function output the pod.status file (if it is fresh) otherwise it outputs a new summary.
 _SHOW_STATUS()
 {
-    SPACE_DEP="_GET_CONTAINER_VAR STRING_TRIM"
+    SPACE_DEP="_GET_CONTAINER_VAR STRING_TRIM _POD_PID"
     #SPACE_ENV="POD_FILE"
 
     local statusFile="${POD_FILE}.status"
+    # Make into dotfile
+    statusFile="${statusFile%/*}/.${statusFile##*/}"
 
     if [ ! -f "${statusFile}" ]; then
         printf "%s\\n" "pod: ${POD}
@@ -1150,16 +1149,23 @@ status: non-existing"
     contents="$(cat "${statusFile}")"
 
     # Check so that PID still exists
-    # TODO: we should ues _POD_PID to be sure the pid is valid, right?
-    local pid="$(printf "%s\\n" "${contents}" | grep "^pid:")"
-    pid="${pid#*:}"
-    STRING_TRIM "pid"
-    if [ -z "${pid}" ] || ! kill -0 "${pid}" 2>/dev/null; then
-        printf "%s\\n" "pod: ${POD}
-status: unknown"
+    local podPid=
+    if ! podPid="$(_POD_PID)"; then
+        # Check if the status file is marked as exited, then we output it.
+        local status="$(printf "%s\\n" "${contents}" | grep "^status:")"
+        status="${status#*:}"
+        STRING_TRIM "status"
+        if [ "${status}" = "exited" ] || [ "${status}" = "removed" ]; then
+            printf "%s\\n" "${contents}"
+            return 0
+        fi
     else
         printf "%s\\n" "${contents}"
+        return 0
     fi
+
+    printf "%s\\n" "pod: ${POD}
+status: unknown"
 }
 
 _GET_READINESS()
@@ -1167,6 +1173,8 @@ _GET_READINESS()
     SPACE_DEP="_GET_CONTAINER_VAR STRING_TRIM"
 
     local statusFile="${POD_FILE}.status"
+    # Make into dotfile
+    statusFile="${statusFile%/*}/.${statusFile##*/}"
 
     if [ ! -f "${statusFile}" ]; then
         return 1
@@ -1177,21 +1185,17 @@ _GET_READINESS()
     contents="$(cat "${statusFile}")"
 
     # Check so that PID still exists
-    # TODO: we should ues _POD_PID to be sure the pid is valid, right?
-    local pid="$(printf "%s\\n" "${contents}" | grep "^pid:")"
-    pid="${pid#*:}"
-    STRING_TRIM "pid"
-    if [ -z "${pid}" ] || ! kill -0 "${pid}" 2>/dev/null; then
-        return 1
-    else
-        local readiness="$(printf "%s\\n" "${contents}" | grep "^readiness:")"
-        readiness="${readiness#*:}"
-        STRING_TRIM "readiness"
-        if [ "${readiness}" = "1" ]; then
-            return 0
-        fi
+    local podPid=
+    if ! podPid="$(_POD_PID)"; then
         return 1
     fi
+    local readiness="$(printf "%s\\n" "${contents}" | grep "^readiness:")"
+    readiness="${readiness#*:}"
+    STRING_TRIM "readiness"
+    if [ "${readiness}" = "1" ]; then
+        return 0
+    fi
+    return 1
 }
 
 # CLI COMMAND
@@ -1218,7 +1222,7 @@ _CREATE()
         fi
 
         # Destroy pod and all containers
-        PRINT "Pod ${POD} is in a bad state, destroy it and all containers (leave volumes)" "info" 0
+        PRINT "Pod ${POD} is in a bad state, destroying it and all containers (leaving volumes)" "info" 0
         if ! _DESTROY_POD; then
             return 1
         fi
@@ -1455,7 +1459,13 @@ _DAEMON_PROCESS()
 
     PRINT "Daemon with pid ${pid} exited" "info" 0
 
-    _WRITE_STATUS_FILE "${created}" "${started}" "exited" "0" ""
+    local status="exited"
+    local podstatus="$(_POD_STATUS)"
+    if [ "${podstatus}" = "" ]; then
+        status="removed"
+    fi
+
+    _WRITE_STATUS_FILE "${created}" "${started}" "${status}" "0" ""
 }
 
 # Write to status file 
@@ -1480,6 +1490,8 @@ _WRITE_STATUS_FILE()
     shift
 
     local statusFile="${POD_FILE}.status"
+    # Make into dotfile
+    statusFile="${statusFile%/*}/.${statusFile##*/}"
     local updated="$(date +%s)"
 
     local contents="pod: ${POD}
