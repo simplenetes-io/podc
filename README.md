@@ -26,7 +26,7 @@ This podman runtime release is what is "linked" by the compiler into the standal
 ```
 
 ## Install the pod compiler onto your system
-The `podc` executable needs to be in the path to be used with `snt` or to be used without `space`.
+The `podc` executable needs to be in the path to be used with `sns` or to be used without `space`.
 
 The `podman-runtime` file needs to either be relative to the `podc` file in `./` or in `./release/` else it must be in `/opt/podc/`.
 

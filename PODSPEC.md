@@ -106,13 +106,13 @@ These files only make sense when using pods not as standalone pods but within th
         A conf file which describes the clusterPort->HostPort relations for the Pod, and some more.
         Each entry is as:
         clusterPort:hostPort:maxConn:sendProxy
-        This file is later accessed by the `snt` project manager when finding new unused host ports to delegate when compiling.
-        Also the `sntd` accesses this file to configure the host-global `proxy.conf` file, so that internal routing between pods on different hosts work.
+        This file is later accessed by the `sns` project manager when finding new unused host ports to delegate when compiling.
+        Also the `simplenetesd` accesses this file to configure the host-global `proxy.conf` file, so that internal routing between pods on different hosts work.
         This file is synced to the cluster together with the pod executable.
 
     - pod.ingress.conf
         A conf file which describes the ingress configuration for the compiled pod.
-        This file is used only by the `snt` project manager when generating the ingress configuration for the ingress pod.
+        This file is used only by the `sns` project manager when generating the ingress configuration for the ingress pod.
         This file is not synced to the cluster.
 
 ## The Simplenetes pod YAML specification
@@ -384,7 +384,7 @@ containers:
             # Anywhere in the cluster a pod can connect to this targetPort by connecting to this clusterPort on a proxy.
             # Optional property, but required when wanting to route traffic within the cluster to the targetPort, either from other Pods or from the Ingress.
             # Only relevant when using pods in a cluster orchestrated by Simplenetes.
-            # In the context of a snt cluster clusterPort can be assigned as `${CLUSTERPORTAUTOx}` and a unique cluster port will be assigned. The `x` is an integer meaning that if `${CLUSTERPORTAUTO1}` is used in two places in the yaml the same cluster port value will be substituted in.
+            # In the context of a sns cluster clusterPort can be assigned as `${CLUSTERPORTAUTOx}` and a unique cluster port will be assigned. The `x` is an integer meaning that if `${CLUSTERPORTAUTO1}` is used in two places in the yaml the same cluster port value will be substituted in.
             clusterPort: 1234
 
             # Define Ingress properties for the clusterPort.
@@ -661,7 +661,7 @@ For executable pods remove all traces of activity, such as log files.
 ./pod create-ramdisks [-l] [-d]
         If run as sudo/root create the ramdisks used by this pod.
         If -d flag is set then delete existing ramdisks, requires sudo/root.
-        If -l flag is provided list ramdisks configuration (used by external tools to provide the ramdisks, for example the Simpleneted Daemon `sntd`).
+        If -l flag is provided list ramdisks configuration (used by external tools to provide the ramdisks, for example the Simpleneted Daemon `simplenetesd`).
         If ramdisks are not prepared prior to the pod starting up then the pod will it self
         create regular directories (fake ramdisks) instead of real ramdisks. This is a fallback
         strategy in the case sudo/root priviligies are not available or if just running in dev mode.
