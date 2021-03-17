@@ -989,7 +989,7 @@ _VERSION()
 {
     #SPACE_ENV="POD_VERSION"
 
-    printf "podVersion: %s\\nruntime: %s\\n" "${POD_VERSION}" "${RUNTIME_VERSION}"
+    printf "apiVersion %s\\nruntime %s\\npodVersion %s\\n" "${API_VERSION}" "${RUNTIME}" "${POD_VERSION}"
 }
 
 _SHOW_USAGE()
@@ -999,12 +999,13 @@ _SHOW_USAGE()
         Output this help.
 
     version
-        Output podVersion and runtime type and version.
+    -V
+        Output version information on stdout.
 
     info
         Output information about this pod's configuration.
 
-    status
+    ps
         Output current runtime status for this pod.
         This function outputs the \"pod.status\" file if it exists and the daemon process exists,
         otherwise status outputted is \"unknown\" if the daemon process does not exist.
@@ -1014,7 +1015,7 @@ _SHOW_USAGE()
         Check the readiness of the pod.
         Exit with code 0 if ready, code 1 if not ready.
 
-    download [-f]
+    download [-f|--force]
         Perform pull on images for all containers.
         If -f option is set then always pull for updated images, even if they already exist locally.
 
@@ -1037,46 +1038,46 @@ _SHOW_USAGE()
         The pod daemon will make sure all containers are kept according to their state and
         react to config changes.
 
-    rm [-k]
+    rm [-k|--kill]
         Remove the pod and all containers, but leave volumes intact.
         If the pod and containers are running they will be stopped first and then removed.
-        If -k flag is set then containers will be killed instead of stopped.
+        If -k|--kill option is set then containers will be killed instead of stopped.
 
-    rerun [-k] [container1 container2 etc]
+    rerun [-k|--kill] [container1 container2 etc]
         Remove the pod and all containers then recreate and start them.
         Same effect as issuing rm and run in sequence.
         If container name(s) are provided then only cycle the containers, not the full pod.
-        If -k flag is set then pod will be killed instead of stopped (not valid when defining individual containers).
+        If -k option is set then pod will be killed instead of stopped (not valid when defining individual containers).
 
     signal [container1 container2 etc]
         Send a signal to one, many or all containers.
         The signal sent is the SIG defined in the containers YAML specification.
         Invoking without arguments will invoke signals all all containers which have a SIG defined.
 
-    logs [containers] [-p] [-t timestamp] [-l limit] [-s streams] [-d details]
+    logs [containers] [-p|--daemon-process] [-t|--timestamp=] [-l|--limit=] [-s|--stream=] [-d|--details=]
         Output logs for one, many or all [containers]. If none given then show for all.
-        -p Show pod daemon process logs (can also be used in combination with [containers])
-        -t timestamp=UNIX timestamp to get logs from, defaults to 0
-           If negative value is given it is seconds relative to now (now-ts).
-        -s streams=[stdout|stderr|stdout,stderr], defaults to \"stdout,stderr\".
-        -l limit=nr of lines to get in total from the top, negative gets from the bottom (latest).
-        -d details=[ts|name|stream|none], comma separated if many.
-            if \"ts\" set will show the UNIX timestamp for each row.
-            if \"age\" set will show age as seconds for each row.
-            if \"name\" is set will show the container name for each row.
-            if \"stream\" is set will show the std stream the logs came on.
-            To not show any details set to \"none\".
-            Defaults to \"ts,name\".
+        -p, --daemon-process    Show pod daemon process logs (can also be used in combination with [containers])
+        -t, --timestamp         timestamp=UNIX timestamp to get logs from, defaults to 0
+                                If negative value is given it is seconds relative to now (now-ts).
+        -s, --streams           stdout|stderr|stdout,stderr, defaults to 'stdout,stderr'.
+        -l, --limit             limit=nr of lines to get in total from the top, negative gets from the bottom (latest).
+        -d, --details           ts|name|stream|none, comma separated if many.
+            if 'ts' set will show the UNIX timestamp for each row.
+            if 'age' set will show age as seconds for each row.
+            if 'name' is set will show the container name for each row.
+            if 'stream' is set will show the std stream the logs came on.
+            To not show any details set to 'none'.
+            Defaults to 'ts,name'.
 
     create-volumes
         Create the volumes used by this pod, if they do not exist already.
         Volumes are always created when running the pod, this command can be used
         to first create the volumes and possibly populate them with data, before running the pod.
 
-    create-ramdisks [-l] [-d]
+    create-ramdisks [-l|--list] [-d|--delete]
         If run as sudo/root create the ramdisks used by this pod.
-        If -d flag is set then delete existing ramdisks, requires sudo/root.
-        If -l flag is provided list ramdisks configuration (used by external tools to provide the ramdisks).
+        If -d|--delete option is set then delete existing ramdisks, requires sudo/root.
+        If -l|--list option is provided then list ramdisks configuration (used by external tools to provide the ramdisks).
         If ramdisks are not prepared prior to the pod starting up then the pod will it self
         create regular directories (fake ramdisks) instead of real ramdisks. This is a fallback
         strategy in the case sudo/root priviligies are not available or if just running in dev mode.
@@ -1090,6 +1091,14 @@ _SHOW_USAGE()
     purge
         Remove all volumes for a pod.
         The pod must first have been removed.
+
+    shell [-b|--bash] [-c|--container=] [<commands>]
+        Enter interactive shell or execute commands if given.
+        If --container is not given then target the last container in the pod spec.
+
+        <commands>
+            Commands are optional and will be run instead of entering the interactive shell.
+            Commands must be places after any option switches and after a pair of dashes '--', so that arguments are not parsed as options.
 "
 }
 
@@ -2086,7 +2095,7 @@ _PURGE()
 # Enter shell in a container
 _SHELL()
 {
-    SPACE_SIGNATURE="container useBash"
+    SPACE_SIGNATURE="container useBash [commands]"
     SPACE_DEP="_GET_CONTAINER_VAR _CONTAINER_EXISTS"
 
     local container="${1}"
@@ -2106,10 +2115,16 @@ _SHELL()
         _GET_CONTAINER_VAR "${POD_CONTAINER_COUNT}" "NAME" "containerName"
     fi
 
+    local sh=sh
     if [ "${useBash}" = "true" ]; then
-        podman exec -ti "${containerName}" bash
+        sh="bash"
+    fi
+    if [ "$#" -gt 0 ]; then
+        local cmds="$*"
+        STRING_ESCAPE "cmds" '"'
+        podman exec -i "${containerName}" ${sh} -c "${cmds}"
     else
-        podman exec -ti "${containerName}" sh
+        podman exec -ti "${containerName}" ${sh}
     fi
 }
 
@@ -2282,15 +2297,17 @@ _CHECK_PODMAN()
     fi
 }
 
+# options are on the format:
+# "_out_all=-a,--all/ _out_state=-s,--state/arg1|arg2|arg3"
+# For non argument options the variable will be increased by 1 for each occurrence.
+# The variable _out_arguments is reserved for positional arguments.
+# Expects _out_arguments and all _out_* to be defined.
 _GETOPTS()
 {
-    SPACE_SIGNATURE="simpleSwitches richSwitches minPositional maxPositional [args]"
-    SPACE_DEP="PRINT STRING_SUBSTR STRING_INDEXOF STRING_ESCAPE"
+    SPACE_SIGNATURE="options minPositional maxPositional [args]"
+    SPACE_DEP="_GETOPTS_SWITCH PRINT STRING_SUBSTR STRING_INDEXOF STRING_ESCAPE"
 
-    local simpleSwitches="${1}"
-    shift
-
-    local richSwitches="${1}"
+    local options="${1}"
     shift
 
     local minPositional="${1:-0}"
@@ -2299,63 +2316,142 @@ _GETOPTS()
     local maxPositional="${1:-0}"
     shift
 
-    _out_rest=""
-
-    local options=""
-    local option=
-    for option in ${richSwitches}; do
-        options="${options}${option}:"
-    done
-
+    _out_arguments=""
     local posCount="0"
+    local skipOptions="false"
     while [ "$#" -gt 0 ]; do
-        local flag="${1#-}"
-        if [ "${flag}" = "${1}" ]; then
-            # Non switch
+        local option=
+        local value=
+        local _out_VARNAME=
+        local _out_ARGUMENTS=
+
+        if [ "${skipOptions}" = "false" ] && [ "${1}" = "--" ]; then
+            skipOptions="true"
+            shift
+            continue
+        fi
+
+        if [ "${skipOptions}" = "false" ] && [ "${1#--}" != "${1}" ]; then # Check if it is a double dash GNU option
+            local l=
+            STRING_INDEXOF "=" "${1}" "l"
+            if [ "$?" -eq 0 ]; then
+                STRING_SUBSTR "${1}" 0 "${l}" "option"
+                STRING_SUBSTR "${1}" "$((l+1))" "" "value"
+            else
+                option="${1}"
+            fi
+            shift
+            # Fill _out_VARNAME and _out_ARGUMENTS
+            _GETOPTS_SWITCH "${options}" "${option}"
+            # Fall through to handle option
+        elif [ "${skipOptions}" = "false" ] && [ "${1#-}" != "${1}" ] && [ "${#1}" -gt 1 ]; then # Check single dash OG-style option
+            option="${1}"
+            shift
+            if [ "${#option}" -gt 2 ]; then
+                PRINT "Invalid option '${option}'" "error" 0
+                return 1
+            fi
+            # Fill _out_VARNAME and _out_ARGUMENTS
+            _GETOPTS_SWITCH "${options}" "${option}"
+            # Do we expect a value to the option? If so take it and shift it out
+            if [ -n "${_out_ARGUMENTS}" ]; then
+                if [ "$#" -gt 0 ]; then
+                    value="${1}"
+                    shift
+                fi
+            fi
+            # Fall through to handle option
+        else
+            # Positional args
             posCount="$((posCount+1))"
             if [ "${posCount}" -gt "${maxPositional}" ]; then
-                PRINT "Too many positional arguments, max ${maxPositional}" "error" 0
+                PRINT "Too many arguments. Max ${maxPositional} argument(s) allowed." "error" 0
                 return 1
             fi
-            _out_rest="${_out_rest}${_out_rest:+ }${1}"
-            shift
-            continue
-        fi
-        local flag2=
-        STRING_SUBSTR "${flag}" 0 1 "flag2"
-        if STRING_ITEM_INDEXOF "${simpleSwitches}" "${flag2}"; then
-            if [ "${#flag}" -gt 1 ]; then
-                PRINT "Invalid option: -${flag}" "error" 0
-                return 1
-            fi
-            eval "_out_${flag}=\"true\""
+            _out_arguments="${_out_arguments}${_out_arguments:+ }${1}"
             shift
             continue
         fi
 
-        local OPTIND=1
-        getopts ":${options}" "flag"
-        case "${flag}" in
-            \?)
-                PRINT "Unknown option ${1-}" "error" 0
-                return 1
-                ;;
-            :)
-                PRINT "Option -${OPTARG-} requires an argument" "error" 0
-                return 1
-                ;;
-            *)
-                STRING_ESCAPE "OPTARG"
-                eval "_out_${flag}=\"${OPTARG}\""
-                ;;
-        esac
-        shift $((OPTIND-1))
+        # Handle option argument
+        if [ -z "${_out_VARNAME}" ]; then
+            PRINT "Unrecognized option: '${option}'" "error" 0
+            return 1
+        fi
+
+        if [ -n "${_out_ARGUMENTS}" ] && [ -z "${value}" ]; then
+            # If we are expecting a option arguments but none was provided.
+            STRING_SUBST "_out_ARGUMENTS" " " ", " 1
+            PRINT "Option ${option} is expecting an argument like: ${_out_ARGUMENTS}" "error" 0
+            return 1
+        elif [ -z "${_out_ARGUMENTS}" ] && [ -z "${value}" ]; then
+            # This was a simple option without argument, increase counter of occurrences
+            eval "value=\"\$${_out_VARNAME}\""
+            if [ -z "${value}" ]; then
+                value=0
+            fi
+            value="$((value+1))"
+        elif [ "${_out_ARGUMENTS}" = "*" ] || STRING_ITEM_INDEXOF "${_out_ARGUMENTS}" "${value}"; then
+            # Value is OK, fall through
+            :
+        else
+            # Invalid argument
+            if [ -z "${_out_ARGUMENTS}" ]; then
+                PRINT "Option ${option} does not take any arguments" "error" 0
+            else
+                PRINT "Invalid ${option} argument '${value}'. Valid arguments are: ${_out_ARGUMENTS}" "error" 0
+            fi
+            return 1
+        fi
+
+        # Store arguments in variable
+        STRING_ESCAPE "value"
+        eval "${_out_VARNAME}=\"\${value}\""
     done
 
     if [ "${posCount}" -lt "${minPositional}" ]; then
-        PRINT "Too few positional arguments, min ${minPositional}" "error" 0
+        PRINT "Too few arguments provided. Minimum ${minPositional} argument(s) required." "error" 0
         return 1
     fi
+}
+
+# Find a match in options and fill _out_VARNAME and _out_ARGUMENTS
+_GETOPTS_SWITCH()
+{
+    SPACE_SIGNATURE="options option"
+    SPACE_DEP="STRING_SUBST STRING_ITEM_INDEXOF STRING_ITEM_GET STRING_ITEM_COUNT"
+
+    local options="${1}"
+    shift
+
+    local option="${1}"
+    shift
+
+    local varname=
+    local arguments=
+
+    local count=0
+    local index=0
+    STRING_ITEM_COUNT "${options}" "count"
+    while [ "${index}" -lt "${count}" ]; do
+        local item=
+        STRING_ITEM_GET "${options}" ${index} "item"
+        varname="${item%%=*}"
+        arguments="${item#*/}"
+        local allSwitches="${item#*=}"
+        allSwitches="${allSwitches%%/*}"
+        STRING_SUBST "allSwitches" "," " " 1
+        if STRING_ITEM_INDEXOF "${allSwitches}" "${option}"; then
+            STRING_SUBST "arguments" "|" " " 1
+            _out_VARNAME="${varname}"
+            _out_ARGUMENTS="${arguments}"
+            return 0
+        fi
+        index=$((index+1))
+    done
+
+    # No such option found
+    return 1
 }
 
 POD_ENTRY()
@@ -2364,7 +2460,8 @@ POD_ENTRY()
     SPACE_DEP="_VERSION _SHOW_USAGE _CREATE _CREATE_FORK _RUN _PURGE _RELOAD_CONFIGS _RM _RERUN _SIGNAL _LOGS _STOP _START _KILL _CREATE_RAMDISKS _CREATE_VOLUMES _DOWNLOAD _SHOW_INFO _SHOW_STATUS _GET_READINESS _CHECK_PODMAN _GET_CONTAINER_VAR _GETOPTS _SHELL"
 
     # This is for display purposes only and shows the runtime type and the version of the runtime impl.
-    local RUNTIME_VERSION="podman 0.1"
+    local API_VERSION="1.0.0-beta1"
+    local RUNTIME="podman"
 
     local MAX_LOG_FILE_SIZE="10485760"  # 10 MiB large log files, then rotating.
 
@@ -2396,9 +2493,9 @@ POD_ENTRY()
     local action="${1:-help}"
     shift $(($# > 0 ? 1 : 0))
 
-    if [ "${action}" = "help" ]; then
+    if [ "${action}" = "help" ] || [ "${action}" = "-h" ] || [ "${action}" = "--help" ]; then
         _SHOW_USAGE
-    elif [ "${action}" = "version" ]; then
+    elif [ "${action}" = "version" ] || [ "${action}" = "-V" ] || [ "${action}" = "--version" ]; then
         _VERSION
     elif [ "${action}" = "info" ]; then
         _SHOW_INFO
@@ -2410,18 +2507,18 @@ POD_ENTRY()
 
         mkdir -p "${POD_LOG_DIR}"
 
-        if [ "${action}" = "status" ]; then
+        if [ "${action}" = "ps" ]; then
             _SHOW_STATUS
         elif [ "${action}" = "readiness" ]; then
             _GET_READINESS
         elif [ "${action}" = "download" ]; then
-            local _out_f="false"
+            local _out_f=
 
-            if ! _GETOPTS "f" "" 0 0 "$@"; then
-                printf "Usage: pod download [-f]\\n" >&2
+            if ! _GETOPTS "_out_f=-f,--force/" 0 0 "$@"; then
+                printf "Usage: pod download [-f|--force]\\n" >&2
                 return 1
             fi
-            _DOWNLOAD "${_out_f}"
+            _DOWNLOAD "${_out_f:+true}"
         elif [ "${action}" = "create" ]; then
             _CREATE
         elif [ "${action}" = "porcelain-create" ]; then
@@ -2436,71 +2533,75 @@ POD_ENTRY()
         elif [ "${action}" = "run" ]; then
             _RUN
         elif [ "${action}" = "rerun" ]; then
-            local _out_rest=
-            local _out_k="false"
+            local _out_arguments=
+            local _out_k=
 
-            if ! _GETOPTS "k" "" 0 999 "$@"; then
-                printf "Usage: pod rerun [-k] [containers]\\n" >&2
+            if ! _GETOPTS "_out_k=-k,--kill/" 0 999 "$@"; then
+                printf "Usage: pod rerun [-k|--kill] [containers]\\n" >&2
                 return 1
             fi
-            if [ -n "${_out_rest}" ] && [ "${_out_k}" = "true" ]; then
-                printf "Error: -k switch not valid when providing containers. Only the pod as a whole can be killed\\nUsage: pod rerun [-k] [containers]\\n" >&2
+            if [ -n "${_out_arguments}" ] && [ -n "${_out_k}" ]; then
+                printf "Error: -k|--kill switch not valid when providing containers. Only the pod as a whole can be killed\\nUsage: pod rerun [-k|--kill] [containers]\\n" >&2
                 return 1
             fi
-            set -- ${_out_rest}
-            _RERUN "${_out_k}" "$@"
+            set -- ${_out_arguments}
+            _RERUN "${_out_k:+true}" "$@"
         elif [ "${action}" = "signal" ]; then
             _SIGNAL "$@"
         elif [ "${action}" = "logs" ]; then
-            local _out_rest=
-            local _out_p="false"
+            local _out_arguments=
+            local _out_p=
             local _out_t=
             local _out_s=
             local _out_l=
             local _out_d=
 
-            if ! _GETOPTS "p" "t s l d" 0 999 "$@"; then
-                printf "Usage: pod logs [containers] [-p] [-t timestamp] [-l limit] [-s streams] [-d details]\\n" >&2
+            if ! _GETOPTS "_out_p=-p,--daemon-process/ _out_t=-t,--timestamp/* _out_l=-l,--limit/* _out_s=-s,--stream/* _out_d=-d,--details/*" 0 999 "$@"; then
+                printf "Usage: sns pod logs pod[:version][@host] [-p|-daemon-process] [-t|--timestamp=] [-l|--limit=] [-s|--stream=] [-d|--details=] [containers]\\n" >&2
                 return 1
             fi
-            set -- ${_out_rest}
-            _LOGS "${_out_t}" "${_out_l}" "${_out_s}" "${_out_d}" "${_out_p}" "$@"
+            set -- ${_out_arguments}
+            _LOGS "${_out_t}" "${_out_l}" "${_out_s}" "${_out_d}" "${_out_p:+true}" "$@"
         elif [ "${action}" = "create-volumes" ]; then
             _CREATE_VOLUMES
         elif [ "${action}" = "create-ramdisks" ]; then
-            local _out_d="false"
-            local _out_l="false"
-            if ! _GETOPTS "d l" "" 0 0 "$@"; then
-                printf "Usage: pod create-ramdisks [-l] [-d ]\\n" >&2
+            local _out_d=
+            local _out_l=
+
+            if ! _GETOPTS "_out_d=-d,--delete/ _out_l=-l,--list/" 0 0 "$@"; then
+                printf "Usage: pod create-ramdisks [-l|--list] [-d|--delete]\\n" >&2
                 return 1
             fi
-            _CREATE_RAMDISKS "${_out_d}" "${_out_l}"
+            _CREATE_RAMDISKS "${_out_d:+true}" "${_out_l:+true}"
         elif [ "${action}" = "reload-configs" ]; then
-            local _out_rest=
-            if ! _GETOPTS "" "" 1 999 "$@"; then
+            local _out_arguments=
+            if ! _GETOPTS "" 1 999 "$@"; then
                 printf "Usage: pod reload-configs config1 [config2...]\\n" >&2
                 return 1
             fi
-            set -- ${_out_rest}
+            set -- ${_out_arguments}
             _RELOAD_CONFIGS "$@"
         elif [ "${action}" = "rm" ]; then
-            local _out_k="false"
+            local _out_k=
 
-            if ! _GETOPTS "k" "" 0 0 "$@"; then
-                printf "Usage: pod rm [-k]\\n" >&2
+            if ! _GETOPTS "_out_k=-k,--kill/" 0 0 "$@"; then
+                printf "Usage: pod rm [-k|==kill]\\n" >&2
                 return 1
             fi
-            _RM "${_out_k}"
+            _RM "${_out_k:+true}"
         elif [ "${action}" = "purge" ]; then
             _PURGE
         elif [ "${action}" = "shell" ]; then
-            local _out_B="false"
+            local _out_arguments=
+            local _out_b=
+            local _out_c=
 
-            if ! _GETOPTS "B" "" 0 1 "$@"; then
-                printf "Usage: pod shell [container] [-B]\\n" >&2
+            if ! _GETOPTS "_out_b=-b,--bash/ _out_c=-c,--container/*" 0 99999 "$@"; then
+                printf "Usage: pod shell [container] [-b|--bash] [-c|--container=] [-- <commands>]\\n" >&2
                 return 1
             fi
-            _SHELL "${_out_rest}" "${_out_B}"
+            set -- ${_out_arguments}
+            _SHELL "${_out_c}" "${_out_b:+true}" "$@"
         else
             PRINT "Unknown command" "error" 0
             return 1

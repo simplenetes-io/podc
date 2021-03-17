@@ -3,47 +3,49 @@ PODC_CMDLINE()
     SPACE_SIGNATURE="[action args]"
     SPACE_DEP="USAGE _GETOPTS COMPILE_ENTRY VERSION"
 
-    local _out_rest=""
-    local _out_h="false"
-    local _out_V="false"
+    local _out_arguments=""
+    local _out_h=
+    local _out_V=
     local _out_p="true"
 
     local _out_f=""
     local _out_o=""
     local _out_d=""
 
-    if ! _GETOPTS "h V" "f o d p" 0 1 "$@"; then
-        printf "Usage: pod [podname] [-f infile] [-o outfile] [-d srcdir] [-p true|false]\\n" >&2
+    if ! _GETOPTS "_out_h=-h,--help/ _out_V=-V,--version/ _out_f=-f,--file/* _out_o=-o,--outfile/* _out_d=-d,--dir/* _out_p=-p,--preprocess/true|false" 0 1 "$@"; then
+        printf "Usage: pod [podname] [-f|--file=] [-o|--outfile=] [-d|--dir=] [-p|--preprocess=true|false]\\n" >&2
         return 1
     fi
 
-    if [ "${_out_h}" = "true" ]; then
+    if [ -n "${_out_h}" ]; then
         USAGE
         return
     fi
 
-    if [ "${_out_V}" = "true" ]; then
+    if [ -n "${_out_V}" ]; then
         VERSION
         return
     fi
 
-    COMPILE_ENTRY "${_out_rest}" "${_out_f}" "${_out_o}" "${_out_d}" "${_out_p}"
+    COMPILE_ENTRY "${_out_arguments}" "${_out_f}" "${_out_o}" "${_out_d}" "${_out_p}"
 }
 
 VERSION()
 {
-    printf "%s\\n" "Simplenetes pod compiler version 0.1 for api: 1.0.0-beta1"
+    printf "%s\\n%s\\n" "podc 0.3.0" "apiVersion 1.0.0-beta1"
 }
 
+# options are on the format:
+# "_out_all=-a,--all/ _out_state=-s,--state/arg1|arg2|arg3"
+# For non argument options the variable will be increased by 1 for each occurrence.
+# The variable _out_arguments is reserved for positional arguments.
+# Expects _out_arguments and all _out_* to be defined.
 _GETOPTS()
 {
-    SPACE_SIGNATURE="simpleSwitches richSwitches minPositional maxPositional [args]"
-    SPACE_DEP="PRINT STRING_SUBSTR STRING_INDEXOF STRING_ESCAPE"
+    SPACE_SIGNATURE="options minPositional maxPositional [args]"
+    SPACE_DEP="_GETOPTS_SWITCH PRINT STRING_SUBSTR STRING_INDEXOF STRING_ESCAPE"
 
-    local simpleSwitches="${1}"
-    shift
-
-    local richSwitches="${1}"
+    local options="${1}"
     shift
 
     local minPositional="${1:-0}"
@@ -52,64 +54,144 @@ _GETOPTS()
     local maxPositional="${1:-0}"
     shift
 
-    _out_rest=""
-
-    local options=""
-    local option=
-    for option in ${richSwitches}; do
-        options="${options}${option}:"
-    done
-
+    _out_arguments=""
     local posCount="0"
+    local skipOptions="false"
     while [ "$#" -gt 0 ]; do
-        local flag="${1#-}"
-        if [ "${flag}" = "${1}" ]; then
-            # Non switch
+        local option=
+        local value=
+        local _out_VARNAME=
+        local _out_ARGUMENTS=
+
+        if [ "${skipOptions}" = "false" ] && [ "${1}" = "--" ]; then
+            skipOptions="true"
+            shift
+            continue
+        fi
+
+        if [ "${skipOptions}" = "false" ] && [ "${1#--}" != "${1}" ]; then # Check if it is a double dash GNU option
+            local l=
+            STRING_INDEXOF "=" "${1}" "l"
+            if [ "$?" -eq 0 ]; then
+                STRING_SUBSTR "${1}" 0 "${l}" "option"
+                STRING_SUBSTR "${1}" "$((l+1))" "" "value"
+            else
+                option="${1}"
+            fi
+            shift
+            # Fill _out_VARNAME and _out_ARGUMENTS
+            _GETOPTS_SWITCH "${options}" "${option}"
+            # Fall through to handle option
+        elif [ "${skipOptions}" = "false" ] && [ "${1#-}" != "${1}" ] && [ "${#1}" -gt 1 ]; then # Check single dash OG-style option
+            option="${1}"
+            shift
+            if [ "${#option}" -gt 2 ]; then
+                PRINT "Invalid option '${option}'" "error" 0
+                return 1
+            fi
+            # Fill _out_VARNAME and _out_ARGUMENTS
+            _GETOPTS_SWITCH "${options}" "${option}"
+            # Do we expect a value to the option? If so take it and shift it out
+            if [ -n "${_out_ARGUMENTS}" ]; then
+                if [ "$#" -gt 0 ]; then
+                    value="${1}"
+                    shift
+                fi
+            fi
+            # Fall through to handle option
+        else
+            # Positional args
             posCount="$((posCount+1))"
             if [ "${posCount}" -gt "${maxPositional}" ]; then
-                PRINT "Too many positional arguments, max ${maxPositional}" "error" 0
+                PRINT "Too many arguments. Max ${maxPositional} argument(s) allowed." "error" 0
                 return 1
             fi
-            _out_rest="${_out_rest}${_out_rest:+ }${1}"
-            shift
-            continue
-        fi
-        local flag2=
-        STRING_SUBSTR "${flag}" 0 1 "flag2"
-        if STRING_ITEM_INDEXOF "${simpleSwitches}" "${flag2}"; then
-            if [ "${#flag}" -gt 1 ]; then
-                PRINT "Invalid option: -${flag}" "error" 0
-                return 1
-            fi
-            eval "_out_${flag}=\"true\""
+            _out_arguments="${_out_arguments}${_out_arguments:+ }${1}"
             shift
             continue
         fi
 
-        local OPTIND=1
-        getopts ":${options}" "flag"
-        case "${flag}" in
-            \?)
-                PRINT "Unknown option ${1-}" "error" 0
-                return 1
-                ;;
-            :)
-                PRINT "Option -${OPTARG-} requires an argument" "error" 0
-                return 1
-                ;;
-            *)
-                STRING_ESCAPE "OPTARG"
-                eval "_out_${flag}=\"${OPTARG}\""
-                ;;
-        esac
-        shift $((OPTIND-1))
+        # Handle option argument
+        if [ -z "${_out_VARNAME}" ]; then
+            PRINT "Unrecognized option: '${option}'" "error" 0
+            return 1
+        fi
+
+        if [ -n "${_out_ARGUMENTS}" ] && [ -z "${value}" ]; then
+            # If we are expecting a option arguments but none was provided.
+            STRING_SUBST "_out_ARGUMENTS" " " ", " 1
+            PRINT "Option ${option} is expecting an argument like: ${_out_ARGUMENTS}" "error" 0
+            return 1
+        elif [ -z "${_out_ARGUMENTS}" ] && [ -z "${value}" ]; then
+            # This was a simple option without argument, increase counter of occurrences
+            eval "value=\"\$${_out_VARNAME}\""
+            if [ -z "${value}" ]; then
+                value=0
+            fi
+            value="$((value+1))"
+        elif [ "${_out_ARGUMENTS}" = "*" ] || STRING_ITEM_INDEXOF "${_out_ARGUMENTS}" "${value}"; then
+            # Value is OK, fall through
+            :
+        else
+            # Invalid argument
+            if [ -z "${_out_ARGUMENTS}" ]; then
+                PRINT "Option ${option} does not take any arguments" "error" 0
+            else
+                PRINT "Invalid ${option} argument '${value}'. Valid arguments are: ${_out_ARGUMENTS}" "error" 0
+            fi
+            return 1
+        fi
+
+        # Store arguments in variable
+        STRING_ESCAPE "value"
+        eval "${_out_VARNAME}=\"\${value}\""
     done
 
     if [ "${posCount}" -lt "${minPositional}" ]; then
-        PRINT "Too few positional arguments, min ${minPositional}" "error" 0
+        PRINT "Too few arguments provided. Minimum ${minPositional} argument(s) required." "error" 0
         return 1
     fi
 }
+
+# Find a match in options and fill _out_VARNAME and _out_ARGUMENTS
+_GETOPTS_SWITCH()
+{
+    SPACE_SIGNATURE="options option"
+    SPACE_DEP="STRING_SUBST STRING_ITEM_INDEXOF STRING_ITEM_GET STRING_ITEM_COUNT"
+
+    local options="${1}"
+    shift
+
+    local option="${1}"
+    shift
+
+    local varname=
+    local arguments=
+
+    local count=0
+    local index=0
+    STRING_ITEM_COUNT "${options}" "count"
+    while [ "${index}" -lt "${count}" ]; do
+        local item=
+        STRING_ITEM_GET "${options}" ${index} "item"
+        varname="${item%%=*}"
+        arguments="${item#*/}"
+        local allSwitches="${item#*=}"
+        allSwitches="${allSwitches%%/*}"
+        STRING_SUBST "allSwitches" "," " " 1
+        if STRING_ITEM_INDEXOF "${allSwitches}" "${option}"; then
+            STRING_SUBST "arguments" "|" " " 1
+            _out_VARNAME="${varname}"
+            _out_ARGUMENTS="${arguments}"
+            return 0
+        fi
+        index=$((index+1))
+    done
+
+    # No such option found
+    return 1
+}
+
 
 USAGE()
 {

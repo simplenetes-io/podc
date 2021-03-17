@@ -20,9 +20,12 @@ compile:
                 then we need to provide the source dir if compiling an executable runtime, since it looks for "./bin".
         - doPreprocessing:
             title: Preprocess and variable substitute pod.yaml file before compiling. Default true.
+            values:
+                - false
+                - true
         - RUN: COMPILE_ENTRY -- "${name}" "${inFile}" "${outFile}" "${srcDir}" "${doPreprocessing}"
 
-cmdline:
+_cmdline:
     _info:
         title: Use podc as a standalone cmd line tool
     _env:
