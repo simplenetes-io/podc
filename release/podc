@@ -1477,8 +1477,6 @@ _COMPILE_PODMAN()
     local buildDir="${1}"
     shift
 
-    local volumesuffix="-${podName}"
-
     ## Output header of runtime template file
     _out_pod="$(awk 'BEGIN {show=1} /^[^#]/ { show=0 } {if(show==1) {print}}' "${runtimePath}")"
 
@@ -1526,11 +1524,6 @@ _COMPILE_PODMAN()
             return 1
         fi
 
-        if [ "${type}" = "volume" ]; then
-            # For all regular volumes we set the prefix
-            volume="${volume}${volumesuffix}"
-        fi
-
         # Check for duplicates
         if STRING_ITEM_INDEXOF "${all_volumes}" "${volume}"; then
             # Duplicate
@@ -1557,7 +1550,24 @@ _COMPILE_PODMAN()
             fi
             POD_RAMDISKS="${POD_RAMDISKS}${POD_RAMDISKS:+ }${volume}:${size}"
         elif [ "${type}" = "volume" ]; then
-            POD_VOLUMES="${POD_VOLUMES}${POD_VOLUMES:+ }${volume}"
+            # Add suffix
+            local shared=
+            _copy "shared" "/volumes/${index}/shared"
+            STRING_SUBST "shared" "'" "" 1
+            STRING_SUBST "shared" '"' "" 1
+            local volumesuffix=""
+            if [ -z "${shared}" ] || [ "${shared}" = "no" ]; then
+                volumesuffix="-${podName}-${podVersion}"
+            elif [ "${shared}" = "pod" ]; then
+                volumesuffix="-${podName}"
+            elif [ "${shared}" = "host" ]; then
+                # Do nothing
+                :
+            else
+                PRINT "Host volume must have shared set to \"no\" (default), \"pod\" or \"host\"." "error" 0
+                return 1
+            fi
+            POD_VOLUMES="${POD_VOLUMES}${POD_VOLUMES:+ }${volume}${volumesuffix}"
         elif [ "${type}" = "config" ]; then
             if [ ! -d "${buildDir}/config/${volume}" ]; then
                 PRINT "Config '${volume}' does not exist as: ${buildDir}/config/${volume}." "error" 0
@@ -1963,9 +1973,15 @@ _COMPILE_MOUNTS()
                     fi
                 done
 
-                if STRING_ITEM_INDEXOF "${POD_VOLUMES}" "${volume}${volumesuffix}"; then
+                if STRING_ITEM_INDEXOF "${POD_VOLUMES}" "${volume}" "indexof"; then
                     type="volume"
-                    volume="${volume}${volumesuffix}"
+                elif STRING_ITEM_INDEXOF "${POD_VOLUMES}" "${volume}-${podName}" "indexof"; then
+                    type="volume"
+                elif STRING_ITEM_INDEXOF "${POD_VOLUMES}" "${volume}-${podName}-${podVersion}" "indexof"; then
+                    type="volume"
+                fi
+                if [ "${type}" = "volume" ]; then
+                    STRING_ITEM_GET "${POD_VOLUMES}" "${indexof}" "volume"
                     mounts="${mounts}${mounts:+ }-v ${volume}:${dest}:z,rw"
                 elif [ "${isRamdisk}" = "1" ]; then
                     type="ramdisk"

@@ -1570,7 +1570,16 @@ _DESTROY_VOLUMES()
 
     local volume=
     for volume in ${POD_VOLUMES}; do
-        if ! podman volume rm "${volume}"; then
+        # We need to get the full name for the exact volume since podman happily removes a volume on part of its name, which can make it dangerous
+        # since multiple calls might delete other volumes.
+        local volumeFullname=
+        if ! volumeFullname=$(podman volume inspect "${volume}" --format  "{{.Name}}" 2>/dev/null); then
+            continue
+        fi
+        if [ "${volume}" != "${volumeFullname}" ]; then
+            continue
+        fi
+        if ! podman volume rm "${volumeFullname}"; then
             PRINT "Volume ${volume} could not be removed" "error" 0
         fi
     done
@@ -1858,7 +1867,14 @@ _VOLUME_EXISTS()
     local volume="${1}"
     shift
 
-    podman volume inspect "${volume}" >/dev/null 2>&1
+    local volumeFullname=
+    if ! volumeFullname=$(podman volume inspect "${volume}" --format  "{{.Name}}" 2>/dev/null); then
+        return 1
+    fi
+    if [ "${volume}" != "${volumeFullname}" ]; then
+        return 1
+    fi
+    return 0
 }
 
 _PULL_IMAGE()

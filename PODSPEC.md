@@ -201,8 +201,13 @@ volumes:
 
     # A podman managed volume.
     # These volumes persist over pod lifetimes and versions, but are bound to the host on which they were created.
+    # shared defines if volumes are not shared and just for the specific pod version, or if shared between pod versions or shared for all pods on the host referencing the volume.
+    # If shared = "no" (which is the default) then the volume name is suffixed with podname and podversion, to make it unique for the specific pod and its version.
+    # If shared = "pod" then only the volume name is suffixed with the podname, to make it unique for the specific pod but shared for all its versions.
+    # If shared = "host" then nothing is suffixed to the volume name making it shared for all pods on the host referencing it.
     - name: log
       type: volume
+      shared: no (default) | pod | host
 
     # Mount directory or device on host.
     # If the bind given is relative then it will be made absolute, based on the current working directory ($PWD).
