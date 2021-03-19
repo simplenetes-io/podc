@@ -1548,6 +1548,11 @@ readiness: ${readiness}
             local image=
             _GET_CONTAINER_VAR "${container_nr}" "IMAGE" "image"
 
+            local imageExists="false"
+            if podman image exists "${image}"; then
+                imageExists="true"
+            fi
+
             local restart=
             _GET_CONTAINER_VAR "${container_nr}" "RESTARTPOLICY" "restart"
 
@@ -1565,6 +1570,7 @@ readiness: ${readiness}
             containers="${containers}    - name: ${name}
       container: ${container}
       image: ${image}
+      imageExists: ${imageExists}
       restart: ${restart}
       mounts: ${mounts}
       ports: ${ports}
@@ -1831,7 +1837,8 @@ _RM()
 }
 
 # CLI COMMAND
-# Output logs for one or many containers
+# Output logs for one or many containers and the daemon log
+# If no containers nor daemon log specified then show for all.
 _LOGS()
 {
     SPACE_SIGNATURE="timestamp limit streams details showProcessLog [container]"
@@ -1849,7 +1856,7 @@ _LOGS()
     local details="${1:-ts,name}"
     shift
 
-    local showProcessLog="${1:-false}"
+    local showProcessLog="${1:-}"
     shift
 
     STRING_SUBST "streams" ',' ' ' 1
@@ -1878,7 +1885,9 @@ _LOGS()
         containers="${POD}"
     fi
     if [ "$#" -eq 0 ]; then
-        # Only get for all containers if not pod logs were requested.
+        # If no containers were specified nor any daemon logs,
+        # then add all containers and the daemon log.
+        # If daemon log was specifiec then do not add anything.
         if [ "${showProcessLog}" != "true" ]; then
             # Get all containers
             local container_nr=
@@ -1886,6 +1895,7 @@ _LOGS()
                 _GET_CONTAINER_VAR "${container_nr}" "NAME" "container"
                 containers="${containers} ${container}"
             done
+            containers="${containers} ${POD}"
         fi
     else
         local container=
@@ -2557,7 +2567,7 @@ POD_ENTRY()
             local _out_d=
 
             if ! _GETOPTS "_out_p=-p,--daemon-process/ _out_t=-t,--timestamp/* _out_l=-l,--limit/* _out_s=-s,--stream/* _out_d=-d,--details/*" 0 999 "$@"; then
-                printf "Usage: sns pod logs pod[:version][@host] [-p|-daemon-process] [-t|--timestamp=] [-l|--limit=] [-s|--stream=] [-d|--details=] [containers]\\n" >&2
+                printf "Usage: pod logs pod[:version][@host] [-p|-daemon-process] [-t|--timestamp=] [-l|--limit=] [-s|--stream=] [-d|--details=] [containers]\\n" >&2
                 return 1
             fi
             set -- ${_out_arguments}
