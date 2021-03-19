@@ -229,7 +229,7 @@ USAGE()
             It can also be used to override the home directory of host volumes with relative mount points,
             then the srcdir is the basedir, otherwise it is the dir of infile.
 
-" >&2
+"
 }
 
 COMPILE_ENTRY()
