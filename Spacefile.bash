@@ -436,12 +436,8 @@ _COMPILE_POD()
         printf "%s\\n" "${_out_pod}" >"${outFile}"
         chmod +x "${outFile}"
         local portmappingsFile="${outFile}.portmappings.conf"
-        # Make into dotfile
-        portmappingsFile="${portmappingsFile%/*}/.${portmappingsFile##*/}"
 
         local ingressFile="${outFile}.ingress.conf"
-        # Make into dotfile
-        ingressFile="${ingressFile%/*}/.${ingressFile##*/}"
 
         if [ -n "${POD_PROXYCONF}" ]; then
             printf "%s\\n" "${POD_PROXYCONF}" >"${portmappingsFile}"
@@ -505,12 +501,8 @@ _COMPILE_EXECUTABLE()
     fi
 
     local portmappingsFile="${outFile}.portmappings.conf"
-    # Make into dotfile
-    portmappingsFile="${portmappingsFile%/*}/.${portmappingsFile##*/}"
 
     local ingressFile="${outFile}.ingress.conf"
-    # Make into dotfile
-    ingressFile="${ingressFile%/*}/.${ingressFile##*/}"
 
     if [ -n "${POD_PROXYCONF}" ]; then
         printf "%s\\n" "${POD_PROXYCONF}" >"${portmappingsFile}"
