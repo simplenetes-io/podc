@@ -820,7 +820,7 @@ _RUN_CONTAINER()
         done
     else
         # No startup probe, we assume the container is ready already
-        :
+        PRINT "Container ${container} started" "info" 0
     fi
 
     # Fire the signalling to other containers that this container is started (which could mean started and successfully exited).
@@ -924,7 +924,9 @@ _SIGNAL_CONTAINER()
         # Restart on on-config and on-interval:x
         # Do not restart on never or on-failure
         if [ "${restartpolicy}" = "on-config" ] || [ "${restartpolicy%:*}" = "on-interval" ]; then
-            _RERUN "false" "${container}"
+            PRINT "Container ${container} is not running but is rerun according to it's restart policy" "ok" 0
+            # We split away the -POD part of the container name here, because it will get added in _RERUN.
+            _RERUN "false" "${container%-${POD}}"
         else
             PRINT "Container ${container} is not restarted due to its restart policy" "debug" 0
         fi
@@ -2057,7 +2059,7 @@ _RELOAD_CONFIGS()
 _RELOAD_CONFIGS2()
 {
     SPACE_SIGNATURE="configs"
-    SPACE_DEP="PRINT _GET_CONTAINER_VAR _CONTAINER_EXISTS _CONTAINER_EXISTS _CONTAINER_STATUS STRING_ITEM_INDEXOF"
+    SPACE_DEP="PRINT _GET_CONTAINER_VAR _CONTAINER_STATUS STRING_ITEM_INDEXOF"
 
     local config=
     local containersdone=""
