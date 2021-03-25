@@ -80,7 +80,8 @@ _OUTPUT_CONTAINER_INFO()
         _GET_CONTAINER_VAR "${container_nr}" "PORTS" "data"
         STRING_SUBST "data" " -p " " " 1
         data="${data#-p }"
-        printf "%s\\n" "${data}"
+        # We eval here to get the interface value printed out
+        eval "printf \"%s\\\\n\" \"${data}"\"
     fi
 }
 
@@ -359,7 +360,7 @@ _CREATE_POD()
     local id=
     # shellcheck disable=2086
     if id=$(podman pod create --label daemonid="${daemonId}" ${POD_LABELS} ${POD_CREATE}); then
-        PRINT "Pod ${POD} created with id: ${id}, daemin pid: ${pid}" "ok" 0
+        PRINT "Pod ${POD} created with id: ${id}, daemon pid: ${pid}" "ok" 0
     else
         PRINT "Pod ${POD} could not be created" "error" 0
         return 1
@@ -696,19 +697,18 @@ _RUN_CONTAINER()
     local container_nr="${1}"
     shift
 
-    # We need to supply the container with a PROXY address, which it uses to communicate with other Pods
+    # We need to supply the container with a PROXY address, which it uses to communicate with other Pods (if it is running inside a Simplenetes cluster).
     # via the proxy process running outside the containers, on the host.
     # First check if "proxy" is defined in /etc/hosts, then leave it at that because the hosts file is automatically copied into the container.
-    # If not present then supply the podman run with the --add-hosts
-    # Get the local IP address, the variable is referenced from the container strings when running the container.
+    # If not present then supply the podman run with the --add-host=proxy:IP argument,
+    # which will make "proxy" a mapped DNS name inside the container.
+    # The IP is taken from the --host-interface argument if it is provided.
     local ADD_PROXY_IP=
     if ! grep -iq "^proxy " "/etc/hosts"; then
-        local proxy_ip=
-        if ! proxy_ip="$(NETWORK_LOCAL_IP)"; then
-            PRINT "Cannot get the local IP of the host, which is needed for the internal proxying to work. You could add it manually to the hosts /etc/hosts file as 'proxy: hostlocalip', and try again" "error" 0
-            return 1
+        local proxy_ip="${HOST_INTERFACE%:}"
+        if [ -n "${proxy_ip}" ]; then
+            ADD_PROXY_IP="--add-host=proxy:${proxy_ip}"
         fi
-        ADD_PROXY_IP="--add-host=proxy:${proxy_ip}"
     fi
 
     local image=
@@ -728,6 +728,9 @@ _RUN_CONTAINER()
 
     local stdoutLog="${POD_LOG_DIR}/${container}-stdout.log"
     local stderrLog="${POD_LOG_DIR}/${container}-stderr.log"
+
+    # Note: the variable HOST_INTERFACE is expected to be set, it can be empty.
+    # It may be referenced in the podman run command below.
 
     local pid=
     # Run the container from a subshell, so we can capture stdout and stderr separately.
@@ -1021,9 +1024,11 @@ _SHOW_USAGE()
         Perform pull on images for all containers.
         If -f option is set then always pull for updated images, even if they already exist locally.
 
-    create
+    create [--host-interface=]
         Create the pod and the volumes, but not the containers. Will not start the pod.
         Will create the main persistent process.
+        If --host-interface is set then ports are bound to that interface, unless the hostInterface was set in the pod yaml spec.
+        Do not explicitly set 0.0.0.0 since the IP is also used for connecting to the proxy.
 
     start
         Start the pod and run the containers, as long as the pod is already created.
@@ -1035,21 +1040,25 @@ _SHOW_USAGE()
     kill
         Kill the pod and all containers.
 
-    run
+    run [--host-interface=]
         Create and start the pod and all containers.
         The pod daemon will make sure all containers are kept according to their state and
         react to config changes.
+        If --host-interface is set then ports are bound to that interface, unless the hostInterface was set in the pod yaml spec.
+        Do not explicitly set 0.0.0.0 since the IP is also used for connecting to the proxy.
 
     rm [-k|--kill]
         Remove the pod and all containers, but leave volumes intact.
         If the pod and containers are running they will be stopped first and then removed.
         If -k|--kill option is set then containers will be killed instead of stopped.
 
-    rerun [-k|--kill] [container1 container2 etc]
+    rerun [-k|--kill] [--host-interface=] [container1 container2 etc]
         Remove the pod and all containers then recreate and start them.
         Same effect as issuing rm and run in sequence.
         If container name(s) are provided then only cycle the containers, not the full pod.
         If -k option is set then pod will be killed instead of stopped (not valid when defining individual containers).
+        If --host-interface is set then ports are bound to that interface, unless the hostInterface was set in the pod yaml spec. Can only be specified when rerunning the whole pod, not single containers.
+        Do not explicitly set 0.0.0.0 since the IP is also used for connecting to the proxy.
 
     signal [container1 container2 etc]
         Send a signal to one, many or all containers.
@@ -1276,7 +1285,7 @@ _CREATE()
 
     # Create the daemon process, in a new session (setsid)
     local pid=
-    if ! pid="$(setsid $0 porcelain-create)"; then
+    if ! pid="$(setsid $0 porcelain-create ${HOST_INTERFACE:+--host-interface=$HOST_INTERFACE})"; then
         PRINT "Could not create daemon process" "error" 0
         _DESTROY_FAKE_RAMDISKS
         return 1
@@ -2502,6 +2511,8 @@ POD_ENTRY()
 
     local POD_LOG_DIR="${POD_DIR}/log"
 
+    local HOST_INTERFACE=""
+
     local action="${1:-help}"
     shift $(($# > 0 ? 1 : 0))
 
@@ -2532,9 +2543,25 @@ POD_ENTRY()
             fi
             _DOWNLOAD "${_out_f:+true}"
         elif [ "${action}" = "create" ]; then
+            local _out_int=
+            if ! _GETOPTS "_out_int=--host-interface/*" 0 0 "$@"; then
+                printf "Usage: pod create [--host-interface=]\\n" >&2
+                return 1
+            fi
+            if [ -n "${_out_int}" ]; then
+                HOST_INTERFACE="${_out_int}:"
+            fi
             _CREATE
         elif [ "${action}" = "porcelain-create" ]; then
             # Undocumented internal method used to fork
+            local _out_int=
+            if ! _GETOPTS "_out_int=--host-interface/*" 0 0 "$@"; then
+                printf "Usage: pod porcelain-create [--host-interface=]\\n" >&2
+                return 1
+            fi
+            if [ -n "${_out_int}" ]; then
+                HOST_INTERFACE="${_out_int}"
+            fi
             _CREATE_FORK
         elif [ "${action}" = "start" ]; then
             _START
@@ -2543,20 +2570,36 @@ POD_ENTRY()
         elif [ "${action}" = "kill" ]; then
             _KILL
         elif [ "${action}" = "run" ]; then
+            local _out_int=
+            if ! _GETOPTS "_out_int=--host-interface/*" 0 0 "$@"; then
+                printf "Usage: pod run [--host-interface=]\\n" >&2
+                return 1
+            fi
+            if [ -n "${_out_int}" ]; then
+                HOST_INTERFACE="${_out_int}:"
+            fi
             _RUN
         elif [ "${action}" = "rerun" ]; then
+            local _out_int=
             local _out_arguments=
             local _out_k=
 
-            if ! _GETOPTS "_out_k=-k,--kill/" 0 999 "$@"; then
-                printf "Usage: pod rerun [-k|--kill] [containers]\\n" >&2
+            if ! _GETOPTS "_out_int=--host-interface/* _out_k=-k,--kill/" 0 999 "$@"; then
+                printf "Usage: pod rerun [-k|--kill] [--host-interface=] [containers]\\n" >&2
                 return 1
             fi
             if [ -n "${_out_arguments}" ] && [ -n "${_out_k}" ]; then
-                printf "Error: -k|--kill switch not valid when providing containers. Only the pod as a whole can be killed\\nUsage: pod rerun [-k|--kill] [containers]\\n" >&2
+                printf "Error: -k|--kill switch not valid when providing containers. Only the pod as a whole can be killed\\nUsage: pod rerun [-k|--kill] [--host-interface=] [containers]\\n" >&2
                 return 1
             fi
             set -- ${_out_arguments}
+            if [ -n "${_out_int}" ]; then
+                if [ "$#" -gt 0 ]; then
+                    printf "Error: Cannot supply new --host-interface when rerunning specific containers and keeping the pod alive." >&2
+                    return 1
+                fi
+                HOST_INTERFACE="${_out_int}:"
+            fi
             _RERUN "${_out_k:+true}" "$@"
         elif [ "${action}" = "signal" ]; then
             _SIGNAL "$@"

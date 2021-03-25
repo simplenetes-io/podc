@@ -102,7 +102,7 @@ If having to delay the Liveness probe then use a Startup probe to either determi
 When a Pod is compiled, the compiler outputs alongside the `pod` executable possibly two extra files.  
 These files only make sense when using pods not as standalone pods but within the Simplenetes pod orchestrator.
 
-    - pod.proxy.conf
+    - pod.portmappings.conf
         A conf file which describes the clusterPort->HostPort relations for the Pod, and some more.
         Each entry is as:
         clusterPort:hostPort:maxConn:sendProxy
@@ -359,19 +359,28 @@ containers:
       # Expose ports on the containers and possible create Ingress configuration to proxy traffic.
       expose:
           ## This first configuration is simply to expose a container port on the host on a specific host port.
-          # targetPort is the port the process in the container is listening on.
+          # targetPort is the port which the process inside the container is listening on.
           # Required if defining a hostPort.
           # Range is 1 to 65535.
           - targetPort: 80
 
             # hostPort is the what port of the node host machine we bind the container part to.
-            # Required if using targetPort.
-            # In the context of a Simplenetes project hostPort can be assigned as `${HOSTPORTAUTOx}` and a unique host port will be assigned. The `x` is an integer meaning that if `${HOSTPORTAUTO1}` is used in two places in the yaml the same host port value will be substituted in.
-            # Host port must be between 1 and 65535 (but typically not between 61000-63999 and 32767).
+            # Required if using targetPort and the pod is standalone,
+            # however in the context of a Simplenetes cluster project the hostPort can be assigned as `${HOSTPORTAUTOx}` and a unique host port will be assigned. The `x` is an integer meaning that if `${HOSTPORTAUTO1}` is used in two places in the yaml the same host port value will be substituted in.
+            # Host port must be between 1 and 65535 (but typically not between 61000-63999 nor 32767 (reserved for proxy)).
             hostPort: 8081
 
+            # Optionally force the interface to bind host ports to.
+            # Setting to "0.0.0.0" is typically required for pods which are receiving traffic from the public internet, such as the ingress.
+            # However, for pods which are not to be publically exposed we should definetly not set it to "0.0.0.0".
+            # If hostInterface is set it then overrides the "--host-interface" option which could be passed to the pod at creation time.
+            # If no "--host-interface" option is passed on cmd line nor the "hostInterface" is set then podman defaults to "0.0.0.0".
+            # When running pods in a Simplenetes cluster the simplenetesd passes the host local IP address to the pod using "--host-interface".
+            # Most often do not set this value, except for the ingress pod which needs to have it set to "0.0.0.0".
+            hostInterface: 0.0.0.0
+
             # Maximum connection count which the proxy will direct to this targetPort
-            # Only relevant when using a clusterPort
+            # Only relevant when using a clusterPort (within a Simplenetes cluster).
             # Default is 4096
             maxConn: 1024
 
@@ -492,7 +501,7 @@ executable:
           maxConn: 1024
 
           # Set to true to have the proxy connect using the PROXY-PROTOCOL
-          # Only relevant when using a clusterPort
+          # Only relevant when using a clusterPort and traffic is incoming via the Simplenetes Proxy.
           # Default is false.
           sendProxy: true
 
@@ -537,7 +546,7 @@ Will show version information as: `runtime: podman 0.1\npodVersion: version\n`. 
 Will show configuration and setup for the pod, not current status.
 
 ```sh
-./pod status
+./pod ps
 # return 0
 # stdout: status data
 ```
@@ -554,7 +563,7 @@ If -f option is set then always pull for updated images, even if they already ex
 For an executable pod it could mean to download and install packages needed to run the service.
 
 ```sh
-./pod create
+./pod create [--host-interface=]
 # return 0 on success
 # return 1 on error
 ```
@@ -592,7 +601,7 @@ For a container pod it will kill the pod and all containers.
 For an executable pod it will forcefully kill the process.
 
 ```sh
-./pod run
+./pod run [--host-interface=]
 # return 0 on success
 # return 1 on error
 ```
@@ -601,7 +610,7 @@ For container pods this command makes sure all containers are in the running sta
 For executables they need to understand if their process is already running and not start another one else start the process and keep the PID somewhere.
 
 ```sh
-./pod rerun [-k] [container1 container2 etc]
+./pod rerun [--host-interface=] [-k] [container1 container2 etc]
 # return 0 on success
 # return 1 on error
 ```

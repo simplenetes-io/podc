@@ -1347,6 +1347,10 @@ _COMPILE_INGRESS()
         _copy "hostPort" "${prefix}${index0}/hostPort"
         STRING_SUBST "hostPort" "'" "" 1
         STRING_SUBST "hostPort" '"' "" 1
+        local hostInterface=
+        _copy "hostInterface" "${prefix}${index0}/hostInterface"
+        STRING_SUBST "hostInterface" "'" "" 1
+        STRING_SUBST "hostInterface" '"' "" 1
         local sendproxy=
         _copy "sendproxy" "${prefix}${index0}/sendProxy"
         STRING_SUBST "sendproxy" "'" "" 1
@@ -1381,6 +1385,13 @@ _COMPILE_INGRESS()
                 return 1
             fi
             targetPort="0"
+        fi
+
+        if [ -n "${hostInterface}" ]; then
+            if [[ ! $hostInterface =~ ^([0-9])+[.]([0-9])+[.]([0-9])+[.]([0-9])+$ ]]; then
+                PRINT "hostInterface must be an IP address." "error" 0
+                return 1
+            fi
         fi
 
         if [ -n "${hostPort}" ]; then
@@ -1425,10 +1436,10 @@ _COMPILE_INGRESS()
                 clusterPort="0"
             fi
 
-            portmappings="${portmappings} ${clusterPort}:${hostPort}:${targetPort}:${maxconn}:${sendproxy}"
+            portmappings="${portmappings} ${clusterPort}:${hostInterface}-${hostPort}:${targetPort}:${maxconn}:${sendproxy}"
 
             if STRING_ITEM_INDEXOF "${POD_HOSTPORTS}" "${hostPort}"; then
-                PRINT "A hostPort can only be defined once in ingress, for hostPort ${hostPort} and targetPort ${targetPort}." "error" 0
+                PRINT "A hostPort can only be defined once in ingress (even for different interfaces), for hostPort ${hostPort} and targetPort ${targetPort}." "error" 0
                 return 1
             fi
             POD_HOSTPORTS="${POD_HOSTPORTS}${POD_HOSTPORTS:+ }${hostPort}"
@@ -1594,6 +1605,8 @@ _COMPILE_INGRESS()
         local clusterPort="${arg%%:*}"
         local hostPort="${arg%:*:*:*}"
         hostPort="${hostPort#*:}"
+        hostInterface="${hostPort%-*}"
+        hostPort="${hostPort#*-}"
         local targetPort="${arg%:*:*}"
         targetPort="${targetPort#*:*:}"
         local maxConn="${arg%:*}"
@@ -1603,9 +1616,16 @@ _COMPILE_INGRESS()
             # Only expose in cluster if clusterPort >0
             local nl="
 "
+            # This gets written to the portmappings file.
             POD_PROXYCONF="${POD_PROXYCONF}${POD_PROXYCONF:+$nl}${clusterPort}:${hostPort}:${maxConn}:${sendProxy}"
         fi
-        _out_container_ports="${_out_container_ports}${_out_container_ports:+ }-p ${hostPort}:${targetPort}"
+        # hostInterface set value of escaped varname
+        if [ -z "${hostInterface}" ]; then
+            hostInterface='\${HOST_INTERFACE}'
+        else
+            hostInterface="${hostInterface}:"
+        fi
+        _out_container_ports="${_out_container_ports}${_out_container_ports:+ }-p ${hostInterface}${hostPort}:${targetPort}"
     done
 }
 
