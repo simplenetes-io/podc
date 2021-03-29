@@ -1109,7 +1109,7 @@ _SHOW_USAGE()
 
         <commands>
             Commands are optional and will be run instead of entering the interactive shell.
-            Commands must be places after any option switches and after a pair of dashes '--', so that arguments are not parsed as options.
+            Commands must be places after any options and after a pair of dashes '--', so that arguments are not parsed as options.
 "
 }
 
@@ -2589,7 +2589,7 @@ POD_ENTRY()
                 return 1
             fi
             if [ -n "${_out_arguments}" ] && [ -n "${_out_k}" ]; then
-                printf "Error: -k|--kill switch not valid when providing containers. Only the pod as a whole can be killed\\nUsage: pod rerun [-k|--kill] [--host-interface=] [containers]\\n" >&2
+                printf "Error: -k|--kill option not valid when providing containers. Only the pod as a whole can be killed\\nUsage: pod rerun [-k|--kill] [--host-interface=] [containers]\\n" >&2
                 return 1
             fi
             set -- ${_out_arguments}

@@ -1,45 +1,69 @@
 # Simplenetes Pod Compiler (podc)
 
-This Space Module compiles a Simplenetes Pod YAML specification into a runnable Pod.
+`podc` takes a _Simplenetes_ Pod YAML [specification](PODSPEC.md) and turns it into a runnable standalone shell script.
 
-A `runtime` is either `podman` or `executable`.
+The shell script is a Posix compliant shell script which manages the full pod life cycle. It uses `podman` (instead of Docker) to create and manage pods and containers in a root-less environment.
 
-The `podman` runtime creates a container pod which is very similar to Kubernetes Pods with the difference that it is a standalone `pod` Posix compliant shell script which manages the pods lifecycle. This shell script uses `podman` to create and manage containers.
+A Simplenetes pod is similar to a Kubernetes pod but is simpler. Simplenetes pods can be used on their own or within a [Simplenetes cluster](https://github.com/simplenetes-io/simplenetes).
 
-The `executable` runtime uses a single user provided executable which conforms to the Pod API and packages it as a pod.
+`podc` is written in Bash script.
 
-See `PODSPC.md` for details about Pod Specifications.
+## Features
+podc features:
 
-See the `./examples` for examples on pod configurations.
+    - Standalone shell script to manage the full pod cycle
+    - Uses podman for running root-less containers
+    - Separates stdout and stderr logging, per container
+    - Compile in dev mode to mount local directory while developing for quick iterations
+    - Support for ramdisks to never put sensitive files on disk
+    - Support for non interruptive config updates of processes running (say for updating haproxy.conf)
+    - Step into a shell into any container in the pod
+    - Signal some or all containers
+    - Startup probes
+    - Readiness probes
+    - Liveness probes
+    - Mount shared and private volumes
+    - Small and easily understandable specification
+    - Ingress configs if running in a Simplenetes cluster
 
-## Preprocessing of pod.yaml files
-The compiler reads an `.env` file alongside the pod yaml file to get variable values for the preprocessing of the pod.yaml file. Variables which are not in the `.env` file are read from environment.
+## Examples
 
-Note: When the compiler is used by Simplenetes in a "cluster-project" it does it's own preprocessing and varibles are then not read from the pod's `.env` file nor from the environment but from the `cluster-vars.env` file only.
+See [https://github.com/simplenetes-io/podc/tree/master/examples](https://github.com/simplenetes-io/podc/tree/master/examples) for more examples.
 
-## Update the podc and podman runtime releases
-
-This podman runtime release is what is "linked" by the compiler into the standalone `pod` script when using the `podman` runtime.
-
+Quick example:  
 ```sh
-./make.sh
-```
-
-## Install the pod compiler onto your system
-The `podc` executable needs to be in the path to be used with `sns` or to be used without `space`.
-
-The `podman-runtime` file needs to either be relative to the `podc` file in `./` or in `./release/` else it must be in `/opt/podc/`.
-
-## Try it out
-```sh
-./release/podc helloworld -f ./examples/nginx/hello-world.yaml
-
-./examples/nginx/hello-world run
+cd examples/nginx
+podc
+./pod run
+./pod ps
 curl 127.0.0.1:8080
-./examples/nginx/hello-world rm
+./pod logs
+./pod rm
 ```
+
+## How does this work?
+The `podc` program (a bash script) parses the `pod.yaml` file and outputs a runnable shell script, which is the pod.
+
+The yaml file can contain variables such as `${portHttp}`, which can be defined in the `pod.env` file and are then substituted in. Variables which are not in the `.env` file are read from environment.
+
+The resulting `pod` file is embedded with shell script code to leverage `podman` to manage the full pod life cycle.
+
+`podc` and it's `yaml processor` are both written in Bash, the resulting output is however in POSIX shell, so you can run the pod using `dash`, `ash`, `busybox ash`, etc, no bash needed.
+
+Note: When podc is used by Simplenetes in a _cluster project_ it does it's own preprocessing and varibles are then not read from the pod's `.env` file nor from the environment but from the `cluster-vars.env` file only.
+
+## But why?
+`podc` and the `Simplenetes` cluster manager are both a reaction to the too much magic that Kubernetes packs.
+
+`podc` was compiled using [space.sh](https://github.com/space-sh/space), which is your friend to make shell script applications.
+
+## Install
+Place the files inside `./release` together somewhere on your path.
+
 
 ## Set up ssh-enabled VM for running
+`podc` is for Linux only, run a VM if on any other OS.
+
 ```sh
 ./boot2podman_download_create_and_run.sh
 ```

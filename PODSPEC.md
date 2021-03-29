@@ -1,17 +1,17 @@
-# Simplenetes Pod specifications
+# Simplenetes Pod specification
 
 ## Background
 Simplenetes pods are managed by a daemon process. This process is created on `create` together with the pod. The process PID is put as a label on the pod so the commands know where to find it.
 The process is signalled TERM/USR2 to terminate/kill it self, done by the `stop` and `kill` commands (or using `kill` directly).
-The daemon process constantly is updating the `pod.status` file which current runtime information.
+The daemon process constantly is updating the `.pod.status` file with the current runtime information.
 
-Each container run is wrapped in a process which is used to separate stdout/stderr logging.
+Each container run is wrapped in a process which is used to separate stdout/stderr logging per container. Logs are stored in `./logs`.
 
 Motivation for this project:
 
- - We prefer podman because:
+ - We use podman because:
     - containers are run root-less
-    - no "docker daemon"
+    - No Docker daemon
     - Docker compatible images
     - podman has fine grained pod features exposed in the tool
  - We want more sophisticated restart policies than podman offers, such as `on-interval`.
@@ -23,53 +23,62 @@ Motivation for this project:
 
 ## Noteworthy
 Rootless pods and containers cannot be paused/unpaused.
-We don't either support stop/start without having the containers recreated.
 
-We don't rely on the --restart flag for restarting containers. This module persistent process handles all logic.
+`podc` does not either support stop/start without having the containers recreated. So always store important files on volumes.
+
+We don't rely on the native `--restart` flag for restarting containers. This module persistent process handles all restart logic.
 
 
 ## Logs
 Each container has a separate log for its stdout and its stderr.
+
 The daemon process has its own logs.
 
 ## Naming
 Pod names, container names and volume names must all match `a-z`, `0-9` and underscore `(_)`, and has to start with a letter.
 
-Container names are internally always automatically suffixed with `-podname-version` as they are created with podman. When referring to a container when calling the pod script the suffix is not to be used.
+Container names are internally always automatically suffixed with `-podname-version` as they are created with podman. When referring to a container when calling the pod script the suffix is not to be used but is always automatically added.
 
-Volume names are internally always automatically suffixed with `-podname` as they are created with podman. Note that since they do not have the version in their suffix volumes with the same names are shared between different pod versions.
+However is running `podman inspect` or similar you will need to add the suffix.
+
+Volume names can be configured so they are shared per host, per pod or even per pod and version (this is managed using naming suffixes).
 
 ## Configs
 A config directory in a pod is something which the pod can mount to a container.
-When files in a config are modified the containers mounting those configs will get signalled (if signals defined) or restarted (depending on restart policy)
+When files in a config are modified the containers mounting those configs will get signalled (if a signal is defined) or restarted (depending on restart policy). This is a neat way of updating configs for a running pod without taking it down.
+An example is the Ingress pod running `haproxy` which gets automatically signalled to reload the `haproxy.conf` when the file gets updated.
 
 ### Configs and Simplenetes cluster projects
 The config dirs in a pod repo can be `imported` into the cluster project and from there they are available to the pod after it is compiled.
 Underscore prefixed dirs are copied to the cluster project but are then not copied to pod releases nor synced to hosts in cluster.
-Such underscores configs are used as templates for the cluster projects, such as the `ingress pod's` templates `(_tpl/)` for haproxy configuration snippets.
-
-Note that only directories in the pod config directory are after import copied to pod releases, any files in the root config directory will never be part of a release.
+Such underscores configs are used as templates for the cluster projects, such as the `ingress pod's` templates `(_tpl/)` for haproxy configuration snippets.  
+Note that only directories in the pod config directory are after import copied to pod releases, any files in the root config directory will never be part of a release.  
+This procedure does not apply to standalone pods.
 
 ## Ramdisks
 If a pod is leveraging ramdisks (for sensitive data) those must be created by root before creating the pod.
 You can call `sudo pod create-ramdisks` to have the ramdisks created and `sudo pod create-ramdisks -d` to have them deleted.
-If not creating ramdisks the pod will automatically create fake ramdisks (plain directories), which are useful when developing.
+If not supplying ramdisks from the outside (by root) the pod will automatically create fake ramdisks (plain directories), which are useful when developing.
+
+Ramdisks is most useful when running pods inside a cluster, then most often simplenetesd is run as root and will create any ramdisks requested.
+
+Note that this is the only root priviligie needed for all of Simplenetes, to create ramdisks.
 
 ## Restart policies
 Simplenetes pods have their own restart policies.
-Containers are always created with `--restart=never`, the restarting is managed by the daemon process.
+Containers are always created with the `podman` option `--restart=never`, then all restarting is managed by the pod daemon process (not simplenetesd, each pod has a daemon process taking care of business).
 
-A root-less container cannot be paused/resumed, Simplenetes is even more harsh and saying that containers which are stopped cannot be started again.
-So when restarting a container it is actually removed and recreated as a new container. This is to force a behaviour which makes upgrading pod version smoother
-as containers can never rely on temporary data inside the container, they must always use volumes for that, which then can be used by upgrades of pods.
+In `podman` a root-less container cannot be paused/resumed, Simplenetes is even more harsh and saying that containers which are stopped cannot be started again.
+So when restarting a container it is actually removed and recreated as a new container. This is to force a behaviour which makes upgrading pods smoother
+as containers can never rely on temporary data inside the container, they must always use volumes for that, which then also can be used by next version of released pods.
 
 Restart policy for when a container exits:
 
-    - always (no matter exit code restart container)
-    - on-config (restart when config files on disk have changed, when container exited with error code or when in exited state and signalled by another container or manually by user)
-    - on-interval:x (as on-config, but also restart on successful exists after x seconds has passed)
-    - on-failure (restart container when exit -ne 0)
-    - never (never restart container, unless manually restarted by user using "pod rerun <container>")
+    - always - no matter exit code restart container)
+    - on-config - restart when i) config files on disk have changed, ii) when container exited with error code or iii) when in exited state and signalled by another container or manually by user
+    - on-interval:x - as on-config, but also restart on successful exists after x seconds has passed
+    - on-failure - restart container when exit code is not equal to 0
+    - never - never restart container, unless manually restarted by user using "pod rerun <container>"
 
 ## Configuring podman
 Configuring podman for rootless:
@@ -79,10 +88,10 @@ bashlund:10000:6553
 The above allocates 6553 IDs to be used by containers.
 Run `podman system migrate` to have podman pick that up.
 
-If any rootless containers are binding to host ports <1024, then we must set on the host machines `sysctl net.ipv4.ip_unprivileged_port_start=80` (or whatever the lowest port number is).
+If any (rootless) containers are binding to host ports lower than 1024, then we must set on the host machines `sysctl net.ipv4.ip_unprivileged_port_start=80` (or whatever the lowest port number is).
 
 ## Probes
-There are three different probe supported:
+There are three different probe supported for pods:
 
     - Startup probes
     - Readiness probes
@@ -107,12 +116,12 @@ These files only make sense when using pods not as standalone pods but within th
         Each entry is as:
         clusterPort:hostPort:maxConn:sendProxy
         This file is later accessed by the `sns` project manager when finding new unused host ports to delegate when compiling.
-        Also the `simplenetesd` accesses this file to configure the host-global `proxy.conf` file, so that internal routing between pods on different hosts work.
+        Also the `simplenetesd` accesses this file to configure the host-global `portmappings.conf` file, so that internal routing between pods on different hosts work.
         This file is synced to the cluster together with the pod executable.
 
     - pod.ingress.conf
         A conf file which describes the ingress configuration for the compiled pod.
-        This file is used only by the `sns` project manager when generating the ingress configuration for the ingress pod.
+        This file is used only by the `sns` project manager when generating the ingress configuration (haproxy.conf) for the ingress pod.
         This file is not synced to the cluster.
 
 ## The Simplenetes pod YAML specification
@@ -121,8 +130,9 @@ There are a couple of different types of Pods supported so far in Simplenetes.
     - Container Pods (using podman)
         These are what most people refer to as pods, a collection of containers on the same container network.
         Just as Kuberenetes Pods.
-    - Process Pods
+    - Executable Pods
         These are single executables which conform to the Pod API.
+        The Proxy Pod is an executable, not a real pod.
 
 Very important to note is the `podc` yaml interpretor has a few restrictions compared to other yaml
 processors (because it is implemented in Bash). The most notable is that lists *must be indented*.
@@ -152,10 +162,10 @@ api: 1.0.0-beta1
 # Default is podman.
 runtime: podman
 
-# The current version of this pod. This is used by Simplenetes project management to distinguish different version of the same pod from eachother.
+# The current version of this pod. This is used by the Simplenetes cluster project manager `(sns)` to distinguish different version of the same pod from eachother.
 # It is also suffixed to the pod name, so that pod instances of different version will not collide.
 # Must be on semver format: major.minor.patch[-tag]
-# This variable is automatically available in the preproceesing stage. It cannot be defined in the .env file.
+# This variable is also automatically made available by podc in the preproceesing stage. It cannot be defined in the .env file.
 podVersion: 0.0.1
 
 # Define any pod labels
@@ -171,11 +181,9 @@ volumes:
       size: 10M
 
     # Config volumes are host directory binded volumes, mounting the corresponding directory in `./config`.
-    # This is good to use for configurations, but not for secrets (and really not for content either).
-    # When the files have changed on disk, the containers(s)
-    # mounting this volume will be automatically signalled/restarted.
-    # They can also be manually signalled by `pod reload-configs config1 config2 etc`. This will signal each container
-    # that have signal defined and is currently running.
+    # This is good to use for configurations, but not for secrets (and really not for content either since they should not be too large in size).
+    # When the files have changed on disk, the containers(s) mounting this volume will be automatically signalled/restarted.
+    # They can also be manually signalled by `pod reload-configs config1 config2 etc`. This will signal each container that have signal defined and is currently running.
     # If the container is not running so it can receive the signal, then the restart-policy decides if a config update restarts the container (on-config and on-interval does that).
     # See more about the signalling further down in this document.
     - name: config1
@@ -185,16 +193,15 @@ volumes:
     # What happens behind the scenes is that there is expected to be a config on disk named "my-secret", which will
     # be mounted into a new automatically configured container which role is is decrypt the configurations and store
     # the result in a automatically created ramdisk.
-    # Any user container mounting this specific config will actually be mounting that ramdisk instead, where it can find the
-    # unencrypted secret.
-    # A new "decrypter container" runs a specific image (simplenetes/secret-decrypter:1.0) which responsibility it is to
+    # Any user container mounting this specific config will actually be mounting that ramdisk instead, where it can find the unencrypted secret.
+    # A new "decrypter container" runs a specific image which responsibility it is to
     # fetch the decryption key for the secret from a vault and decrypt the config and store in on the ramdisk.
-    # Exactly how this is to be implemented is for a later release.
-    # The user container mounting this secret ramdisk will not get directly signalled when the underlaying config is updated, but it
+    # The user container mounting this secret ramdisk will get indirectly signalled when the underlaying config is updated, because it
     # will get signalled by the "decrypter container" as it becomes ready (if the user container has a signal defined) so it can re-read the unencrypted secret, or it will get restarted if it has the restart
     # policy on-config or on-interval.
     # So, in practice a user container is signalled/retarted the same way for an encrypted config (secret) as for when mounting a regular config.
     # See more about the signalling further down in this document.
+    # NOTE: encrypted secret NOT YET IMPLEMENTED.
     - name: my-secret
       type: config
       encrypted: true
@@ -218,7 +225,7 @@ volumes:
       bind: /dev/sda1
 
 containers:
-    # Each container has name, which be suffixed by the podname and the version.
+    # Each container has name, which will be suffixed by the podname and the version.
     - name: hello
 
       # Image, podman will try a few different registries by default.
@@ -234,10 +241,6 @@ containers:
         - -c
         - /etc/nginx.conf
 
-      # Set the initial working directory of the container.
-      # Defaults to the Docker image WORKDIR.
-      workingDir: /opt/files
-
       # Arguments to the entrypoint command can be set, if the command only provides the binary.
       # Default is the docker Image CMD.
       # Each argument as a separate list item
@@ -245,17 +248,21 @@ containers:
         - -c
         - /etc/nginx.conf
 
+      # Set the initial working directory of the container.
+      # Defaults to the Docker image WORKDIR.
+      workingDir: /opt/files
+
       # Define environment variables which will be accessible to the container.
       env:
           - name: WARP_SPEED
             value: activated
 
       # Restart policy for when a container exits. See above for options.
-      # always (no matter exit code restart container)
-      # on-config (restart when config files on disk have changed, when container exited with error code or when in exited state and signalled by another container or manually by user)
-      # on-interval:x (as on-config, but also restart on successful exists after x seconds has passed)
-      # on-failure (restart container when exit -ne 0)
-      # never (never restart container, unless manually restarted by user using "pod rerun <container>")
+      # always - no matter exit code restart container)
+      # on-config - restart when i) config files on disk have changed, ii) when container exited with error code or iii) when in exited state and signalled by another container or manually by user
+      # on-interval:x - as on-config, but also restart on successful exists after x seconds has passed
+      # on-failure - restart container when exit code is not equal to 0
+      # never - never restart container, unless manually restarted by user using "pod rerun <container>"
       restart: on-interval:10
 
       # Define how this container is signalled, optional.
@@ -303,7 +310,7 @@ containers:
       # If a container fails to startup later it will be destroyed and restarted according to its restart policy.
       startupProbe:
           # Wait max 60 seconds for the container to be ready. Default is 120.
-          # The pod executable sleeps 1 second between invoking the command and will abort the startup after timeout is reached.
+          # The pod daemon process sleeps 1 second between invoking the command and will abort the startup after timeout is reached.
           timeout: 60
 
           # Set to true to wait for the container to exit with code 0. When the container has exited is is treated as started and ready.
@@ -320,14 +327,14 @@ containers:
 
           # Note that `exit and `cmd` are mutually exclusive to each other.
           # If none of them are defined then the container is treated as successfully started as soon as the container is started.
-          # If wanting to run HTTP GET or TCP socket connection tests to determine the startup state, see the docs for how to do that.
+          # If wanting to run HTTP GET or TCP socket connection tests to determine the startup state, curl/wget/netcat needs to be run inside the container.
 
-          # Define under `signal` are other containers we shall signal when this container has started up successfully.
+          # Defined below `signal` we find other containers the pod daemon shall signal when this container has started up successfully.
           # Only containers which are running will get signalled, stopped containers will get restarted if they have the `on-config` or `on-interval` restart policy.
           # When a Pod is starting up fresh then only containers defined above this container can possibly be running/existing and therefore only those can get signalled.
           # However, if the container is restarted then all containers defined under `signal` will get signalled (regardless the definition order) if the startup was successful.
-          # Any running containers to be signalled must have defined the `signal` property, otherwise the signalling targeted at them is ignored.
-          # Exited containers who are signalled and have appropiate restart policies will get restarted.
+          # Any running containers to be signalled must have defined the `signal` property, otherwise the signalling targeted at them is ignored,
+          # however exited containers who are signalled and have appropiate restart policies will get restarted.
           signal:
               - container: hello
               - container: secret
@@ -365,8 +372,8 @@ containers:
           - targetPort: 80
 
             # hostPort is the what port of the node host machine we bind the container part to.
-            # Required if using targetPort and the pod is standalone,
-            # however in the context of a Simplenetes cluster project the hostPort can be assigned as `${HOSTPORTAUTOx}` and a unique host port will be assigned. The `x` is an integer meaning that if `${HOSTPORTAUTO1}` is used in two places in the yaml the same host port value will be substituted in.
+            # Required if using targetPort,
+            # however in the context of a Simplenetes cluster project the hostPort can be assigned as `${HOSTPORTAUTOx}` and a unique host port will be assigned. The `x` is an integer meaning that if `${HOSTPORTAUTO1}` is used in two places in the yaml the same host port value will be substituted in. In standalone mode `${HOSTPORTAUTO1}` must then be defined in the `pod.env` file.
             # Host port must be between 1 and 65535 (but typically not between 61000-63999 nor 32767 (reserved for proxy)).
             hostPort: 8081
 
@@ -385,7 +392,7 @@ containers:
             maxConn: 1024
 
             # Set to true to have the proxy connect using the PROXY-PROTOCOL
-            # Only relevant when using a clusterPort
+            # Only relevant when using a clusterPort so that the traffic is incoming via the cluster proxy mesh.
             # Default is false.
             sendProxy: true
 
@@ -395,10 +402,11 @@ containers:
 
             # clusterPort is a TCP port in a given range which is cluster wide.
             # Cluster port must be between 1024 and 65535, but not between 30000-32767.
-            # Anywhere in the cluster a pod can connect to this targetPort by connecting to this clusterPort on a proxy.
+            # Anywhere in the cluster a pod can connect to this targetPort by connecting to this clusterPort on its local IP, as long a a `proxy pod` is running on the host.
             # Optional property, but required when wanting to route traffic within the cluster to the targetPort, either from other Pods or from the Ingress.
             # Only relevant when using pods in a cluster orchestrated by Simplenetes.
             # In the context of a sns cluster clusterPort can be assigned as `${CLUSTERPORTAUTOx}` and a unique cluster port will be assigned. The `x` is an integer meaning that if `${CLUSTERPORTAUTO1}` is used in two places in the yaml the same cluster port value will be substituted in.
+            # If many pods and/or pod version use the same clusterPort they will all share incoming traffic.
             clusterPort: 1234
 
             # Define Ingress properties for the clusterPort.
@@ -417,7 +425,7 @@ containers:
 
                 ## All redirections and errorfile below are exclusive to each other.
 
-                # Redirect traffic to https, this does not require a backend answering any connections.
+                # Redirect traffic to https, this does not require a backend answering any connections. It becomes purely a haproxy configuration.
                 redirectToHttps: true
 
                 # Redirect all traffic to another location.
@@ -553,7 +561,7 @@ Will show configuration and setup for the pod, not current status.
 Will show up to date runtime status about the pod and containers.
 
 ```sh
-./pod download [-f]
+./pod download [-f|--force]
 # return 0 on success
 # return 1 on error
 ```
@@ -610,7 +618,7 @@ For container pods this command makes sure all containers are in the running sta
 For executables they need to understand if their process is already running and not start another one else start the process and keep the PID somewhere.
 
 ```sh
-./pod rerun [--host-interface=] [-k] [container1 container2 etc]
+./pod rerun [--host-interface=] [-k|--kill] [container1 container2 etc]
 # return 0 on success
 # return 1 on error
 ```
@@ -654,7 +662,7 @@ For containers pods this means that containers who mount the configs will be not
 For executable pods it becomes implementation specific what it means.
 
 ```sh
-./pod rm [-k]
+./pod rm [-k|--kill]
 # return 0 if successful
 ```
 For container pods stop and destroy all pods, leave volumes intact.  
@@ -671,8 +679,18 @@ For container pods which are non existing, remove all volumes associated.
 
 For executable pods remove all traces of activity, such as log files.
 
+
 ```sh
-./pod create-ramdisks [-l] [-d]
+./pod shell -c container|--container= [-b|--bash] [-- commands]
+# return 0 if successful
+```
+
+Open interactive shell inside container. If -b option is provided force bash shell.
+If commands are provided run commands instead of opening interactive shell.
+
+
+```sh
+./pod create-ramdisks [-l|--list] [-d|--delete]
         If run as sudo/root create the ramdisks used by this pod.
         If -d flag is set then delete existing ramdisks, requires sudo/root.
         If -l flag is provided list ramdisks configuration (used by external tools to provide the ramdisks, for example the Simpleneted Daemon `simplenetesd`).
@@ -692,7 +710,7 @@ Ex: "tmp1:10M\ntmp2:5M"
 Note that if ramdisks have not been created prior to starting the pod, they pod is expected to gracefully handle this by creating regular directories which is can use instead of provided ramdisks.
 
 ```sh
-./pod logs [containers] [-p] [-t timestamp] [-l limit] [-s streams] [-d details]  
+./pod logs [containers] [-p|--daemon-process] [-t timestamp|--timestamp=] [-l limit|--limit=] [-s streams|--stream=] [-d details|--details=]  
     Output logs for one, many or all [containers]. If none given then show for all.  
     -p Show pod daemon process logs (can also be used in combination with [containers])  
     -t timestamp=UNIX timestamp to get logs from, defaults to 0  
