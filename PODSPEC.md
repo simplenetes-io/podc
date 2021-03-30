@@ -290,7 +290,9 @@ containers:
           - dest: /mnt/tmpstor
             volume: tmpstorage
 
-          # By mounting a config this container will get signalled and possibly restarted (depending on restart-policy) when a configuration is updated.
+          # By mounting a config this container can get signalled and possibly restarted (depending on restart-policy) when a configuration is updated.
+          # This can manually be achieved by running "pod reload-configs conf1 [conf2]".
+          # In a Simplenetes cluster environment simplenetesd takes care of detecting changes in configurations and calling the pods to reload their configs when that happens.
           - dest: /mnt/config1
             volume: config1
 
