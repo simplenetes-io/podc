@@ -1,5 +1,0 @@
-#!/usr/bin/env sh
-
-# This executable *must* implement the Pod API to actually be useful
-
-printf "%s\\n" "Hello"

@@ -1,0 +1,25 @@
+api: 1.0.0-beta1
+podVersion: 0.0.1
+
+# Create a volume binded to a directory on host.
+volumes:
+    - name: nginx_files
+      type: config
+
+containers:
+    - name: nginx
+      image: nginx:1.16.1-alpine
+      mounts:
+          - volume: nginx_files
+            dest: /nginx_files
+      command:
+          - nginx
+          - -c
+          - /nginx_files/nginx.conf
+          - -g
+          - daemon off;
+      signal:
+          - sig: HUP
+      expose:
+          - targetPort: 80
+            hostPort: 8080
