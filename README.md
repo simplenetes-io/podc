@@ -2,11 +2,11 @@
 
 `podc` takes a _Simplenetes_ Pod YAML [specification](PODSPEC.md) and turns it into a runnable standalone shell script.
 
-The shell script is a Posix compliant shell script which manages the full pod life cycle. It uses `podman` (instead of Docker) to create and manage pods and containers in a root-less environment.
+The compiled shell script is a Posix compliant shell script which manages the full pod life cycle. It uses `podman` (instead of Docker) to create and manage pods and containers in a root-less environment.
 
 A Simplenetes pod is similar to a Kubernetes pod but is simpler. Simplenetes pods can be used on their own or within a [Simplenetes cluster](https://github.com/simplenetes-io/simplenetes).
 
-`podc` is written in Bash script.
+`podc` is written in Bash.
 
 ## Features
 podc features:
@@ -58,8 +58,21 @@ Note: When podc is used by Simplenetes in a _cluster project_ it does it's own p
 `podc` was compiled using [space.sh](https://github.com/space-sh/space), which is your friend to make shell script applications.
 
 ## Install
-Place the files inside `./release` together somewhere on your path.
+`podc` is a standalone executable, written in Bash and will run anywhere Bash is installed.  
+The reason `podc` is written in Bash and not Posix shell is that it has a built in YAML parser which requires the more feature rich Bash to run.  
+Even though `podc` it self is a standalone executable it requires a runtime template file for generating pod scripts. This file must also be accessible on the system.  
+`podc` will look for the `podman-runtime` template file first in the same directory as it self (`./`), then in `./release` and finally in `/opt/podc`.  
+The reason for that it looks in `./release` is because it makes developing the pod compiler easier.  
 
+Note that you might want to change "0.3.0" in the url to a more recent version, if available.
+
+```sh
+wget https://raw.githubusercontent.com/simplenetes-io/podc/0.3.0/release/podc
+wget https://raw.githubusercontent.com/simplenetes-io/podc/0.3.0/release/podman-runtime-1.0.0-beta1
+chmod +X podc
+sudo mv podc /usr/local/bin
+sudo mv podman-runtime-1.0.0-beta1 /usr/local/bin
+```
 
 ## Set up ssh-enabled VM for running
 `podc` is for Linux only, run a VM if on any other OS.
