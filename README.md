@@ -60,9 +60,11 @@ Note: When podc is used by Simplenetes in a _cluster project_ it does it's own p
 ## Install
 `podc` is a standalone executable, written in Bash and will run anywhere Bash is installed.
 
-Dependencies are:
-- `sockstat` or `netstat`: Commonly contained in `net-tools` packaged, required to verify ports availability.
-On Debian-based distributions:
+Dependencies are:  
+Optional dependecies used by the podman runtime to check if ports are busy prior to creating the pod:  
+- `sockstat`, `netstat` or `lsof`.
+
+`netstat` is commonly contained in the `net-tools` package and can be installed on Debian-based distributions as:  
 ```
 sudo apt-get install -yq net-tools
 ```
