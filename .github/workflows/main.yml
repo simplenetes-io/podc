@@ -40,7 +40,7 @@ jobs:
           body: |
             Check the attachments below for this release's prebuilt executables:
             * podc
-            * podman-runtime-1.0.0-beta1
+            * podc-podman-runtime
           draft: false
           prerelease: false
           
@@ -56,12 +56,12 @@ jobs:
           asset_content_type: application/x-shellscript
 
       - name: Upload Release podman-runtime
-        id: upload-release-podman-runtime 
+        id: upload-release-podc-podman-runtime 
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./release/podman-runtime-1.0.0-beta1
-          asset_name: podman-runtime-1.0.0-beta1
+          asset_path: ./release/podc-podman-runtime
+          asset_name: podc-podman-runtime
           asset_content_type: application/x-shellscript
