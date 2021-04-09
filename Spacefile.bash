@@ -32,7 +32,7 @@ PODC_CMDLINE()
 
 VERSION()
 {
-    printf "%s\\n%s\\n" "podc 0.3.0" "apiVersion 1.0.0-beta1"
+    printf "%s\\n%s\\n" "podc 0.3.1" "apiVersion 1.0.0-beta1"
 }
 
 # options are on the format:

@@ -72,11 +72,12 @@ Even though `podc` it self is a standalone executable it requires a runtime temp
 `podc` will look for the `podman-runtime` template file first in the same directory as it self (`./`), then in `./release` and finally in `/opt/podc`.  
 The reason for that it looks in `./release` is because it makes developing the pod compiler easier.  
 
-Note that you might want to change "0.3.0" in the url to a more recent version, if available.
-
+Check out the latest release [here](https://github.com/simplenetes-io/podc/releases/latest) or manually download it from the command line:
 ```sh
-wget https://raw.githubusercontent.com/simplenetes-io/podc/0.3.0/release/podc
-wget https://raw.githubusercontent.com/simplenetes-io/podc/0.3.0/release/podman-runtime-1.0.0-beta1
+LATEST_VERSION=$(curl -L -s https://github.com/simplenetes-io/podc/releases/latest)
+LATEST_VERSION=$(echo $LATEST_VERSION | sed -e 's/.*tag_name\=\([^"]*\)\&.*/\1/')
+wget https://github.com/simplenetes-io/podc/releases/download/$LATEST_VERSION/podc
+wget https://github.com/simplenetes-io/podc/releases/download/$LATEST_VERSION/podman-runtime-1.0.0-beta1
 chmod +x podc
 sudo mv podc /usr/local/bin
 sudo mv podman-runtime-1.0.0-beta1 /usr/local/bin
