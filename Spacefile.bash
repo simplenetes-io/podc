@@ -1,7 +1,7 @@
 PODC_CMDLINE()
 {
     SPACE_SIGNATURE="[action args]"
-    SPACE_DEP="USAGE _GETOPTS COMPILE_ENTRY VERSION"
+    SPACE_DEP="USAGE _GETOPTS COMPILE_ENTRY SHOW_VERSION"
 
     local _out_arguments=""
     local _out_h=
@@ -24,14 +24,14 @@ PODC_CMDLINE()
     fi
 
     if [ -n "${_out_V}" ]; then
-        VERSION
+        SHOW_VERSION
         return
     fi
 
     COMPILE_ENTRY "${_out_arguments}" "${_out_f}" "${_out_o}" "${_out_d}" "${_out_p}" "${_out_e:+true}"
 }
 
-VERSION()
+SHOW_VERSION()
 {
     SPACE_ENV="API_VERSION VERSION"
 
