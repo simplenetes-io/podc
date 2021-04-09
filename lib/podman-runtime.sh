@@ -83,6 +83,13 @@ _OUTPUT_CONTAINER_INFO()
         # We eval here to get the interface value printed out
         eval "printf \"%s\\\\n\" \"${data}"\"
     fi
+
+    if [ "${field}" = "network" ]; then
+        local data=
+        _GET_CONTAINER_VAR "${container_nr}" "NETWORK" "data"
+        data="${data#--network=}"
+        printf "%s\\n" "${data}"
+    fi
 }
 
 # Check if a pod with the given name exists.
@@ -486,10 +493,14 @@ _CHECK_HOST_PORTS()
 
     local port=
     for port in ${POD_HOSTPORTS}; do
-        if ! NETWORK_PORT_FREE "${port}"; then
+        local status=
+        NETWORK_PORT_FREE "${port}"
+        status="$?"
+        if [ "${status}" -eq 1 ]; then
             PRINT "Host port ${port} is busy, can't create the pod ${POD}" "error" 0
             return 1
         fi
+        # If status -eq 2 we fall through. Happens if there is no tool to check port availability.
     done
 }
 
@@ -992,9 +1003,7 @@ _DESTROY_VOLUMES()
 
 _VERSION()
 {
-    #SPACE_ENV="POD_VERSION"
-
-    printf "apiVersion %s\\nruntime %s\\npodVersion %s\\n" "${API_VERSION}" "${RUNTIME}" "${POD_VERSION}"
+    printf "api %s\\nruntime %s\\npodVersion %s\\n" "${API_VERSION}" "${RUNTIME_VERSION}" "${POD_VERSION}"
 }
 
 _SHOW_USAGE()
@@ -1160,6 +1169,9 @@ _SHOW_INFO()
 
         printf "      ports: "
         _OUTPUT_CONTAINER_INFO "${container_nr}" "ports"
+
+        printf "      network: "
+        _OUTPUT_CONTAINER_INFO "${container_nr}" "network"
     done
 }
 
@@ -1569,6 +1581,7 @@ readiness: ${readiness}
 
             local mounts="$(_OUTPUT_CONTAINER_INFO "${container_nr}" "mounts")"
             local ports="$(_OUTPUT_CONTAINER_INFO "${container_nr}" "ports")"
+            local network="$(_OUTPUT_CONTAINER_INFO "${container_nr}" "network")"
 
             local startCount=
             _GET_CONTAINER_VAR "${container_nr}" "STARTCOUNT" "startCount"
@@ -1585,6 +1598,7 @@ readiness: ${readiness}
       restart: ${restart}
       mounts: ${mounts}
       ports: ${ports}
+      network: ${network}
       startCount: ${startCount:-0}
       status: ${containerstatus}
 "
@@ -2479,10 +2493,7 @@ POD_ENTRY()
 {
     SPACE_SIGNATURE="action [args]"
     SPACE_DEP="_VERSION _SHOW_USAGE _CREATE _CREATE_FORK _RUN _PURGE _RELOAD_CONFIGS _RM _RERUN _SIGNAL _LOGS _STOP _START _KILL _CREATE_RAMDISKS _CREATE_VOLUMES _DOWNLOAD _SHOW_INFO _SHOW_STATUS _GET_READINESS _CHECK_PODMAN _GET_CONTAINER_VAR _GETOPTS _SHELL"
-
-    # This is for display purposes only and shows the runtime type and the version of the runtime impl.
-    local API_VERSION="1.0.0-beta1"
-    local RUNTIME="podman"
+    SPACE_ENV="API_VERSION RUNTIME_VERSION"
 
     local MAX_LOG_FILE_SIZE="10485760"  # 10 MiB large log files, then rotating.
 

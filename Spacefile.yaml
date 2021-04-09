@@ -1,5 +1,12 @@
 @clone: yaml:1.0.2 string:1.4.0 text:1.1.1 file:1.6.0
 
+_env:
+    # Current podc version
+    - VERSION: 0.4.0
+    # Current compiler supported API version
+    - API_VERSION: 1.0.0-beta2
+    # Current and former API versions which the compiler is compatible with
+    - SUPPORTED_API_VERSIONS: ${API_VERSION} 1.0.0-beta1
 compile:
     _info:
         title: Compile a YAML pod spec into a standalone self managed executable.
@@ -23,7 +30,12 @@ compile:
             values:
                 - false
                 - true
-        - RUN: COMPILE_ENTRY -- "${name}" "${inFile}" "${outFile}" "${srcDir}" "${doPreprocessing}"
+        - allowSourceEnv:
+            title: Allow variables not defined in pod.yaml to be sourced from environment
+            values:
+                - false
+                - true
+        - RUN: COMPILE_ENTRY -- "${name}" "${inFile}" "${outFile}" "${srcDir}" "${doPreprocessing}" "${allowSourceEnv}"
 
 _cmdline:
     _info:

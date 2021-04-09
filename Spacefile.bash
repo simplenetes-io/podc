@@ -8,11 +8,12 @@ PODC_CMDLINE()
     local _out_V=
     local _out_p="true"
 
+    local _out_e=
     local _out_f=""
     local _out_o=""
     local _out_d=""
 
-    if ! _GETOPTS "_out_h=-h,--help/ _out_V=-V,--version/ _out_f=-f,--file/* _out_o=-o,--outfile/* _out_d=-d,--dir/* _out_p=-p,--preprocess/true|false" 0 1 "$@"; then
+    if ! _GETOPTS "_out_e=-e,--source-env/ _out_h=-h,--help/ _out_V=-V,--version/ _out_f=-f,--file/* _out_o=-o,--outfile/* _out_d=-d,--dir/* _out_p=-p,--preprocess/true|false" 0 1 "$@"; then
         printf "Usage: pod [podname] [-f|--file=] [-o|--outfile=] [-d|--dir=] [-p|--preprocess=true|false]\\n" >&2
         return 1
     fi
@@ -27,12 +28,14 @@ PODC_CMDLINE()
         return
     fi
 
-    COMPILE_ENTRY "${_out_arguments}" "${_out_f}" "${_out_o}" "${_out_d}" "${_out_p}"
+    COMPILE_ENTRY "${_out_arguments}" "${_out_f}" "${_out_o}" "${_out_d}" "${_out_p}" "${_out_e:+true}"
 }
 
 VERSION()
 {
-    printf "%s\\n%s\\n" "podc 0.3.1" "apiVersion 1.0.0-beta1"
+    SPACE_ENV="API_VERSION VERSION"
+
+    printf "podc %s\\napi %s\\n" "${VERSION}" "${API_VERSION}"
 }
 
 # options are on the format:
@@ -197,33 +200,36 @@ USAGE()
 {
     printf "%s\\n" "Usage:
 
-    podc -h
+    podc -h | --help
         Output this help
 
-    podc -V
+    podc -V | --version
         Output version
 
     podc [podname] [-f infile] [-o outfile] [-d srcdir] [-p]
 
         podname
-            is the name of the pod, default is to take the directory name,
+            The name of the pod, default is to take the directory name,
             but which might not be a valid name. Only a-z0-9 and underscore allowed.
             Must start with a letter.
 
-        -f infile
-            optional path to the pod.yaml file.
+        -f | --file=infile
+            Optional path to the pod.yaml file.
             Default is to look for pod.yaml in the current directory.
 
-        -o outfile
-            optional path where to write the executable pod file.
+        -o | --outfile=path
+            Optional path where to write the executable pod file.
             Default is \"pod\" in the same directory as the pod yaml file.
 
-        -p true|false (default true)
-            optional flag do perform preprocessing on the pod.yaml file or not.
+        -p | --preprocess=true | false (default true)
+            Optional flag do perform preprocessing on the pod.yaml file or not.
+
+        -e | --source-env
+            Set to allow sourcing variables from the environment if they are not provided in the .env file.
 
         -d srcdir
             Optional directory path to use as source directory if \"infile\"
-            is in another directory.
+            is inside another directory.
             This feature is used by other tools who do preprocessing
             on the original pod.yaml file and place a temporary file elsewhere.
             It can also be used to override the home directory of host volumes with relative mount points,
@@ -234,7 +240,7 @@ USAGE()
 
 COMPILE_ENTRY()
 {
-    SPACE_SIGNATURE="[podName inFile outFile srcDir doPreprocessing]"
+    SPACE_SIGNATURE="[podName inFile outFile srcDir doPreprocessing allowSourceEnv]"
     SPACE_DEP="_COMPILE_POD PRINT TEXT_EXTRACT_VARIABLES TEXT_VARIABLE_SUBST TEXT_FILTER TEXT_GET_ENV FILE_REALPATH"
 
     local podName="${1:-}"
@@ -250,6 +256,9 @@ COMPILE_ENTRY()
     shift $(($# > 0 ? 1 : 0))
 
     local doPreprocessing="${1:-true}"
+    shift $(($# > 0 ? 1 : 0))
+
+    local allowSourceEnv="${1:-}"
     shift $(($# > 0 ? 1 : 0))
 
     if [ -z "${podName}" ]; then
@@ -298,18 +307,23 @@ COMPILE_ENTRY()
         else
             PRINT "No .env file present." "info" 0
         fi
+
         # Fill in missing variables from environment
         local varname=
         local varnames=""
         for varname in ${variablestosubst}; do
-            if ! printf "%s\\n" "${values}" |grep -q "^${varname}="; then
+            if ! printf "%s\\n" "${values}" | grep -q "^${varname}="; then
                 varnames="${varnames}${varnames:+ }${varname}"
             fi
         done
         if [ -n "${varnames}" ]; then
-            PRINT "Sourcing variables from environment since they are not defined in .env file, for variables: ${varnames}" "info" 0
-            if ! values="${values}${values:+${newline}}$(TEXT_GET_ENV "${varnames}" "1")"; then
-                PRINT "There are missing variables in .env file or environment." "warning" 0
+            if [ "${allowSourceEnv}" = "true" ]; then
+                PRINT "Sourcing variables from environment since they are not defined in .env file, for variables: ${varnames}" "info" 0
+                if ! values="${values}${values:+${newline}}$(TEXT_GET_ENV "${varnames}" "1")"; then
+                    PRINT "There are missing variables in .env file or environment." "warning" 0
+                fi
+            else
+                PRINT "There are missing variables in .env file." "warning" 0
             fi
         fi
 
@@ -330,6 +344,7 @@ _COMPILE_POD()
 {
     SPACE_SIGNATURE="podName inFile outFile [srcDir]"
     SPACE_DEP="PRINT YAML_PARSE _CONTAINER_VARS _CONTAINER_SET_VAR _QUOTE_ARG STRING_ITEM_INDEXOF STRING_ITEM_GET _GET_CONTAINER_NR _COMPILE_INGRESS _COMPILE_RUN _COMPILE_LABELS _COMPILE_ENTRYPOINT _COMPILE_CPUMEM STRING_SUBST _GET_CONTAINER_VAR _COMPILE_PODMAN _COMPILE_EXECUTABLE FILE_REALPATH _COMPILE_ENV _COMPILE_MOUNTS _COMPILE_STARTUP_PROBE_SIGNAL _COMPILE_STARTUP_PROBE _COMPILE_STARTUP_PROBE_TIMEOUT _COMPILE_READINESS_PROBE _COMPILE_READINESS_PROBE_TIMEOUT  _COMPILE_LIVENESS_PROBE _COMPILE_LIVENESS_PROBE_TIMEOUT _COMPILE_SIGNALEXEC _COMPILE_IMAGE _COMPILE_RESTART"
+    SPACE_ENV="API_VERSION SUPPORTED_API_VERSIONS"
 
     local podName="${1}"
     shift
@@ -376,9 +391,8 @@ _COMPILE_POD()
     local api=
     _copy "api" "/api"
 
-    if [ "${api}" != "1.0.0-beta1" ]; then
-        PRINT "api must be set to '1.0.0-beta1'" "error" 0
-        return 1
+    if ! STRING_ITEM_INDEXOF "${SUPPORTED_API_VERSIONS}" "${api}"; then
+        PRINT "API version \"${api}\" not supported. \"api:\" must be set to \"${API_VERSION}\"" "error" 0
     fi
 
     # get runtime
@@ -410,18 +424,18 @@ _COMPILE_POD()
     fi
     runtimeDir="$(FILE_REALPATH "${runtimeDir}")"
 
-    PRINT "Compiling \"${podName}-${podVersion}\" for api version: \"${api}\" and runtime \"${runtime}\", YAML file: ${inFile}." "info" 0
+    PRINT "Compiling \"${podName}-${podVersion}\" for api version: \"${API_VERSION}\" and runtime \"${runtime}\", YAML file: ${inFile}." "info" 0
 
     if [ "${runtime}" = "podman" ]; then
         # Get path to runtime
         local runtimePath=""
         while true; do
-            for runtimePath in "${runtimeDir}/podman-runtime-${api}" "${runtimeDir}/lib/podman-runtime-${api}" "${runtimeDir}/release/podman-runtime-${api}" "/opt/podc/podman-runtime-${api}"; do
+            for runtimePath in "${runtimeDir}/podc-podman-runtime" "${runtimeDir}/lib/podc-podman-runtime" "${runtimeDir}/release/podc-podman-runtime" "/opt/podc/podc-podman-runtime"; do
                 if [ -f "${runtimePath}" ]; then
                     break 2
                 fi
             done
-            PRINT "Could not locate podman-runtime-${api}" "error" 0
+            PRINT "Could not locate podc-podman-runtime" "error" 0
             return 1
         done
         local buildDir="${outFile%/*}"
@@ -491,30 +505,6 @@ _COMPILE_EXECUTABLE()
         return 1
     fi
 
-    # Declare variables populated by fn
-    local _out_container_ports=""  # We don't use this here but the fn accesses it.
-    local POD_HOSTPORTS=""  # We don't use this either, here.
-    local POD_INGRESSCONF=""
-    local POD_PROXYCONF=""
-    if ! _COMPILE_INGRESS "/expose/" "false"; then
-        return 1
-    fi
-
-    local portmappingsFile="${outFile}.portmappings.conf"
-
-    local ingressFile="${outFile}.ingress.conf"
-
-    if [ -n "${POD_PROXYCONF}" ]; then
-        printf "%s\\n" "${POD_PROXYCONF}" >"${portmappingsFile}"
-    else
-        rm -f "${portmappingsFile}"
-    fi
-    if [ -n "${POD_INGRESSCONF}" ]; then
-        printf "%s\\n" "${POD_INGRESSCONF}" >"${ingressFile}"
-    else
-        rm -f "${ingressFile}"
-    fi
-
     # Copy the executable
     cp "${executable}" "${outFile}"
     chmod +x "${outFile}"
@@ -582,10 +572,19 @@ _COMPILE_PODMAN()
             return 1
         fi
 
-        if [[ ! $volume =~ ^[a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
-            PRINT "Volume name '${volume}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter" "error" 0
-            return 1
+        # If config volume then allow to start with underscore.
+        if [ "${type}" = "config" ]; then
+            if [[ ! $volume =~ ^[_a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
+                PRINT "Volume name '${volume}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter or underscore for config volumes." "error" 0
+                return 1
+            fi
+        else
+            if [[ ! $volume =~ ^[a-z]([_a-z0-9]*[a-z0-9])?$ ]]; then
+                PRINT "Volume name '${volume}' is malformed. only lowercase letters [a-z], numbers [0-9] and underscore is allowed. First character must be lowercase letter" "error" 0
+                return 1
+            fi
         fi
+
 
         # Check for duplicates
         if STRING_ITEM_INDEXOF "${all_volumes}" "${volume}"; then
@@ -730,6 +729,22 @@ _COMPILE_PODMAN()
         STRING_SUBST "container_name" '"' "" 1
         _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "NAME" "container_name"
 
+        ## network
+        #
+        local network=
+        _copy "network" "/containers/${index}/network"
+        STRING_SUBST "network" "'" "" 1
+        STRING_SUBST "network" '"' "" 1
+        if [ -n "${network}" ]; then
+            if [ "${network}" != "host" ]; then
+                PRINT "Unknown network \"${network}\". Network if set must be set to \"host\"." "error" 0
+                return 1
+            fi
+            PRINT "Network set to host. Any expose section will be ignored." "info" 0
+            network="--network=${network}"
+        fi
+        _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "NETWORK" "network"
+
         ## restart:
         #
         local value=""
@@ -830,8 +845,10 @@ _COMPILE_PODMAN()
         ## ingress
         #
         local _out_container_ports=""
-        if ! _COMPILE_INGRESS "/containers/${index}/expose/" "true"; then
-            return 1
+        if [ -z "${network}" ]; then
+            if ! _COMPILE_INGRESS "/containers/${index}/expose/" "true"; then
+                return 1
+            fi
         fi
         _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "PORTS" "_out_container_ports"
 
@@ -896,7 +913,7 @@ _COMPILE_PODMAN()
 
     local index=
     for index in $(seq 1 ${POD_CONTAINER_COUNT}); do
-        for var in NAME RESTARTPOLICY IMAGE STARTUPPROBE STARTUPTIMEOUT STARTUPSIGNAL LIVENESSPROBE LIVENESSTIMEOUT READINESSPROBE READINESSTIMEOUT SIGNALSIG SIGNALCMD CONFIGS MOUNTS ENV COMMAND ARGS WORKINGDIR CPUMEM PORTS RUN; do
+        for var in NAME RESTARTPOLICY NETWORK IMAGE STARTUPPROBE STARTUPTIMEOUT STARTUPSIGNAL LIVENESSPROBE LIVENESSTIMEOUT READINESSPROBE READINESSTIMEOUT SIGNALSIG SIGNALCMD CONFIGS MOUNTS ENV COMMAND ARGS WORKINGDIR CPUMEM PORTS RUN; do
             local varname="POD_CONTAINER_${var}_${index}"
             local value="${!varname}"
             _out_pod="${_out_pod}${newline}$(printf "%s=\"%s\"\\n" "${varname}" "${value}")"
@@ -1311,7 +1328,7 @@ _COMPILE_CPUMEM()
 _COMPILE_RUN()
 {
     # Internal "macro" function. We don't define any SPACE_ headers for this.
-    local run="\\\${ADD_PROXY_IP:-} --name \${POD_CONTAINER_NAME_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ENV_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_PORTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_COMMAND_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_MOUNTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_WORKINGDIR_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_IMAGE_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ARGS_${POD_CONTAINER_COUNT}}"
+    local run="\\\${ADD_PROXY_IP:-} --name \${POD_CONTAINER_NAME_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ENV_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_NETWORK_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_PORTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_COMMAND_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_MOUNTS_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_WORKINGDIR_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_IMAGE_${POD_CONTAINER_COUNT}} \${POD_CONTAINER_ARGS_${POD_CONTAINER_COUNT}}"
     _CONTAINER_SET_VAR "${POD_CONTAINER_COUNT}" "RUN" "run"
 }
 
@@ -1755,6 +1772,7 @@ local POD_CONTAINER_LIVENESSTIMEOUT_${container_nr}=
 local POD_CONTAINER_SIGNALSIG_${container_nr}=
 local POD_CONTAINER_SIGNALCMD_${container_nr}=
 local POD_CONTAINER_RESTARTPOLICY_${container_nr}=
+local POD_CONTAINER_NETWORK_${container_nr}=
 local POD_CONTAINER_CONFIGS_${container_nr}=
 local POD_CONTAINER_MOUNTS_${container_nr}=
 local POD_CONTAINER_ENV_${container_nr}=

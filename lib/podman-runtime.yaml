@@ -1,4 +1,9 @@
-@clone: string:1.4.0 network:2.0.0 file:1.6.0
+@clone: string:1.4.0 network:2.1.0 file:1.6.0
+_env:
+    -
+    - RUNTIME_VERSION: podman 1.0.0
+    - API_VERSION: >-
+        @include: @{DIR}/../Spacefile.yaml|/_env/API_VERSION
 podman:
     _info:
         title: Pod runtime to run and manage a podman pod

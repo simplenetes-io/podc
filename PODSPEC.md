@@ -42,18 +42,19 @@ Container names are internally always automatically suffixed with `-podname-vers
 However is running `podman inspect` or similar you will need to add the suffix.
 
 Volume names can be configured so they are shared per host, per pod or even per pod and version (this is managed using naming suffixes).
+Volumes which are `configs` are allowed to begin with underscore, which will stop them from being propagated to Simplenetes clusters.
 
 ## Configs
 A config directory in a pod is something which the pod can mount to a container.
 When files in a config are modified the containers mounting those configs will get signalled (if a signal is defined) or restarted (depending on restart policy). This is a neat way of updating configs for a running pod without taking it down.
-An example is the Ingress pod running `haproxy` which gets automatically signalled to reload the `haproxy.conf` when the file gets updated.
+An example is the Ingress pod running `haproxy` which gets automatically signalled to reload the `haproxy.conf` when the file inside the config dir gets updated.
 
 ### Configs and Simplenetes cluster projects
 The config dirs in a pod repo can be `imported` into the cluster project and from there they are available to the pod after it is compiled.
 Underscore prefixed dirs are copied to the cluster project but are then not copied to pod releases nor synced to hosts in cluster.
-Such underscores configs are used as templates for the cluster projects, such as the `ingress pod's` templates `(_tpl/)` for haproxy configuration snippets.  
-Note that only directories in the pod config directory are after import copied to pod releases, any files in the root config directory will never be part of a release.  
-This procedure does not apply to standalone pods.
+Such underscores configs are used as templates for the cluster projects, such as the `ingress pod's` templates `(_tpl/)` for haproxy configuration snippets, and also for when running pods as standalone and deliberately not wanting particulars configs to be propagated to the cluster hosts.  
+Note that only directories in the pod config directory are after import copied to pod releases, any files in the root config directory will never be part of a release (the directory is the config)  
+This `import` procedure does not apply to standalone pods.
 
 ## Ramdisks
 If a pod is leveraging ramdisks (for sensitive data) those must be created by root before creating the pod.
@@ -149,11 +150,47 @@ parent:
  - item2
 ```
 
+## Preprocessing
+The `pod.yaml` file is run through a simple preprocessor which does variable substitution and excluding/including of lines.  
+
+The only two preprocessor directives available are `#ifdef` and `#iftrue`, together with their counterparts `#ifndef` and `#ifntrue`.  
+
+`#ifdef ${variable}` simply checks if the variable has any value.  
+
+`#iftrue ${variable}` checks if the variable is equal to "true".  
+
+Each directive must end with an `#endif`.  
+
+Each directive *must not* be indented.  
+
+Directives cannot be nested.  
+
+Variables are read from the `pod.env` file, and if not present there then optionally sourced from the environment (which however can be considered bad practice, but sometimes useful).  
+
+The variable `${podVersion}` is special and is defined in the `yaml` as `podVersion: x.y.z` and made available as a variable by podc.
+
+```yaml
+person:
+#ifdef ${myVar}
+    name: ${myVar}
+#endif
+#ifndef ${myVar}
+    # Use a default name
+    name: McRaminov
+#endif
+#iftrue ${hazSkillz}
+    rating: 10
+#endif
+#ifntrue ${hazSkillz}
+    rating: 0
+#endif
+```
+
 ### Container Pod Spec (using podman)
 
 ```yaml
 # For the podcompiler to know what the yaml structure is supposed to look like and how to compile the output.
-api: 1.0.0-beta1
+api: 1.0.0-beta2
 
 # The runtime the pod will be built for.
 # Options are: podman or executable
@@ -365,6 +402,13 @@ containers:
             - c
             - "wget -O /dev/null http://127.0.0.1:8080/healthz"
 
+      # Optionally set the network of the container to be part of the host network.
+      # Default (blank) means that the container connects to the pod network and can only be reched if it exposes ports (below).
+      # The IngressPod for example needs to bind to the host network so that the client IP is the actual IP and not an internal IP caused by port forwarding
+      # when forwarding traffic into the container using the "expose" configuration.
+      # A container which connects to the host network cannot have an "expose" configuration. The process in the container will bind ports directly on the host network.
+      network: host
+
       # Expose ports on the containers and possible create Ingress configuration to proxy traffic.
       expose:
           ## This first configuration is simply to expose a container port on the host on a specific host port.
@@ -377,9 +421,10 @@ containers:
             # Required if using targetPort,
             # however in the context of a Simplenetes cluster project the hostPort can be assigned as `${HOSTPORTAUTOx}` and a unique host port will be assigned. The `x` is an integer meaning that if `${HOSTPORTAUTO1}` is used in two places in the yaml the same host port value will be substituted in. In standalone mode `${HOSTPORTAUTO1}` must then be defined in the `pod.env` file.
             # Host port must be between 1 and 65535 (but typically not between 61000-63999 nor 32767 (reserved for proxy)).
+            # Note that the for each pod compile free host ports are scouted to fill the AUTO variables. The same host ports will not be set for AUTO variables in two different compilations even if the `x` is the same.
             hostPort: 8081
 
-            # Optionally force the interface to bind host ports to.
+            # Optionally force what interface to bind mapped ports to.
             # Setting to "0.0.0.0" is typically required for pods which are receiving traffic from the public internet, such as the ingress.
             # However, for pods which are not to be publically exposed we should definetly not set it to "0.0.0.0".
             # If hostInterface is set it then overrides the "--host-interface" option which could be passed to the pod at creation time.
@@ -400,7 +445,8 @@ containers:
 
           ## Second configuration shows how to map a clusterPort to the expose and also to configure Ingress details.
           - targetPort: 80
-            hostPort: 8080
+            # Generally we want Simplenetes to find free host ports for us when compiling, so we use the AUTO variable.
+            hostPort: ${HOSTPORTAUTO1}
 
             # clusterPort is a TCP port in a given range which is cluster wide.
             # Cluster port must be between 1024 and 65535, but not between 30000-32767.
@@ -408,8 +454,10 @@ containers:
             # Optional property, but required when wanting to route traffic within the cluster to the targetPort, either from other Pods or from the Ingress.
             # Only relevant when using pods in a cluster orchestrated by Simplenetes.
             # In the context of a sns cluster clusterPort can be assigned as `${CLUSTERPORTAUTOx}` and a unique cluster port will be assigned. The `x` is an integer meaning that if `${CLUSTERPORTAUTO1}` is used in two places in the yaml the same cluster port value will be substituted in.
+            # Note that the for each pod compile free cluster ports are scouted to fill the AUTO variables. The same cluster ports will not be set for AUTO variables in two different compilations even if the `x` is the same.
             # If many pods and/or pod version use the same clusterPort they will all share incoming traffic.
-            clusterPort: 1234
+            # Generally we want Simplenetes to find free cluster ports for us when compiling, so we use the AUTO variable.
+            clusterPort: ${CLUSTERPORTAUTO1}
 
             # Define Ingress properties for the clusterPort.
             # Only relevant when using pods in a cluster orchestrated by Simplenetes.
@@ -474,7 +522,7 @@ It is the coders responsibility that the executable implements the Pod API in th
 
 ```yaml
 # For the podcompiler to know what the yaml structure is supposed to look like
-api: 1.0.0-beta1
+api: 1.0.0-beta2
 
 # Manage a single executable
 runtime: executable
@@ -491,33 +539,7 @@ executable:
     # on target OS, etc.
     file: bin/proxy
 
-    # An executable can have exposed ports.
-    # The configuration is the same as for container pods except that there are no targetPorts, since
-    # there are no containers.
-    # The exposed hostPorts are in this case the ports which the executable will bind to itself.
-    # The resulting "cluster-config" is generated and automatically stored alongside the "pod" executable in a "config" named "cluster".
-    # The executable is expected to read the file in the "cluster" config and return it when the executable is invoked with the argument "cluster-config", just as the Pod API requires.
-    expose:
-          # hostPort is the port the executable will be listening to.
-        - hostPort: 8080
-
-          # Optional property, but required when wanting to route traffic within the cluster to the hostPort, either from other Pods or from the Ingress.
-          # Only relevant when using pods in a cluster orchestrated by Simplenetes.
-          clusterPort: 1234
-
-          # Maximum connection count which the proxy will direct to this hostPort.
-          # Only relevant when using a clusterPort
-          # Default is 4096
-          maxConn: 1024
-
-          # Set to true to have the proxy connect using the PROXY-PROTOCOL
-          # Only relevant when using a clusterPort and traffic is incoming via the Simplenetes Proxy.
-          # Default is false.
-          sendProxy: true
-
-          # Define Ingress properties for the clusterPort.
-          # See the container pod example about how to define ingress routes.
-          ingress:
+    # An executable cannot have an "expose" section since it is on the host network.
 ```
 ## Pod API
 Compiled pod scripts and other executables who implement the Pod API can be used as pods.
