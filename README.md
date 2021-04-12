@@ -79,10 +79,10 @@ Check out the latest release [here](https://github.com/simplenetes-io/podc/relea
 LATEST_VERSION=$(curl -L -s https://github.com/simplenetes-io/podc/releases/latest)
 LATEST_VERSION=$(echo $LATEST_VERSION | sed -e 's/.*tag_name\=\([^"]*\)\&.*/\1/')
 wget https://github.com/simplenetes-io/podc/releases/download/$LATEST_VERSION/podc
-wget https://github.com/simplenetes-io/podc/releases/download/$LATEST_VERSION/podman-runtime-1.0.0-beta1
+wget https://github.com/simplenetes-io/podc/releases/download/$LATEST_VERSION/podc-podman-runtime
 chmod +x podc
 sudo mv podc /usr/local/bin
-sudo mv podman-runtime-1.0.0-beta1 /usr/local/bin
+sudo mv podc-podman-runtime /usr/local/bin
 ```
 
 ## Set up ssh-enabled VM for running
