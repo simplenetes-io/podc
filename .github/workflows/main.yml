@@ -24,10 +24,14 @@ jobs:
       - uses: actions/checkout@v2
 
       - name: Build
+        id: build
         run: |
           curl -s https://get.space.sh | sudo sh
           sh ./make.sh
-          ls -lhat ./release
+          cd release
+          echo ::set-output name=podcversion::$(sha256sum --tag podc)
+          echo ::set-output name=podcruntimeversion::$(sha256sum --tag podc-podman-runtime)
+          cd ..
           
       - name: Create Release
         id: create_release
@@ -39,8 +43,8 @@ jobs:
           release_name: ${{ github.ref }}
           body: |
             Check the attachments below for this release's prebuilt executables:
-            * podc
-            * podc-podman-runtime
+            * ${{ steps.build.outputs.podcversion }}
+            * ${{ steps.build.outputs.podcruntimeversion }}
           draft: false
           prerelease: false
           
