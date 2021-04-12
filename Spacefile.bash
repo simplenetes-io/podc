@@ -46,7 +46,7 @@ SHOW_VERSION()
 _GETOPTS()
 {
     SPACE_SIGNATURE="options minPositional maxPositional [args]"
-    SPACE_DEP="_GETOPTS_SWITCH PRINT STRING_SUBSTR STRING_INDEXOF STRING_ESCAPE"
+    SPACE_DEP="_GETOPTS_SWITCH PRINT STRING_SUBSTR STRING_INDEXOF"
 
     local options="${1}"
     shift
@@ -146,7 +146,6 @@ _GETOPTS()
         fi
 
         # Store arguments in variable
-        STRING_ESCAPE "value"
         eval "${_out_VARNAME}=\"\${value}\""
     done
 
