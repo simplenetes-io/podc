@@ -76,10 +76,9 @@ The reason for that it looks in `./release` is because it makes developing the p
 
 Check out the latest release [here](https://github.com/simplenetes-io/podc/releases/latest) or manually download it from the command line:
 ```sh
-LATEST_VERSION=$(curl -L -s https://github.com/simplenetes-io/podc/releases/latest)
-LATEST_VERSION=$(echo $LATEST_VERSION | sed -e 's/.*tag_name\=\([^"]*\)\&.*/\1/')
-wget https://github.com/simplenetes-io/podc/releases/download/$LATEST_VERSION/podc
-wget https://github.com/simplenetes-io/podc/releases/download/$LATEST_VERSION/podc-podman-runtime
+LATEST_VERSION=$(curl -s -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/simplenetes-io/podc/releases/latest | grep tag_name | cut -d":" -f2 | tr -d ",|\"| ")
+curl -LO https://github.com/simplenetes-io/podc/releases/download/$LATEST_VERSION/podc
+curl -LO https://github.com/simplenetes-io/podc/releases/download/$LATEST_VERSION/podc-podman-runtime
 chmod +x podc
 sudo mv podc /usr/local/bin
 sudo mv podc-podman-runtime /usr/local/bin
